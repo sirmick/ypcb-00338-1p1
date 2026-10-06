@@ -58,7 +58,8 @@ bit meaning of every feature), `ppips_*`, `mask_*`.
   with the stock nextpnr.
 - **Memory initial contents**: use `$readmemh` with files written by the design's `prebuild.py`.
   An initial `for` loop over a large memory takes yosys tens of minutes to evaluate (7 s with
-  `$readmemh`). Don't call the file parameter `INIT`.
+  `$readmemh`). Give the file-name parameter a non-empty default: yosys runs `$readmemh` with the default while
+  parsing, so an empty one fails ("Can not open file ``", [YosysHQ/yosys#2966](https://github.com/YosysHQ/yosys/issues/2966); `read_verilog -defer` also avoids it).
 - **Clocks**: feed MMCM/PLL `CLKIN1` straight from the clock-capable pin, not from a BUFG that also
   drives fabric; the latter made nextpnr report hold violations from a 0.85 ns skew estimate.
 - **Timing**: nextpnr's reported Fmax is a conservative floor on this part, not a prediction: a

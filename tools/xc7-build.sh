@@ -38,7 +38,7 @@ fi
 if [[ -f $dir/prebuild.py ]]; then                # generated inputs (e.g. $readmemh files) go into the build dir
     python3 "$dir/prebuild.py" "$out" || { echo "== prebuild FAILED"; exit 1; }
 fi
-xdc=$(ls "$out"/gen_*.xdc 2>/dev/null | head -1)    # a prebuild-generated XDC wins over the design's own
+xdc=$(ls "$out"/gen_*.xdc 2>/dev/null | head -1 || true)   # a prebuild-generated XDC wins over the design's own
 [[ -n $xdc ]] || xdc=$(ls "$dir"/*.xdc | head -1)
 step() {
     local name=$1 t0=$SECONDS; shift
