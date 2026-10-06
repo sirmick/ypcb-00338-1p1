@@ -1,0 +1,95 @@
+diff --git a/himbaechel/uarch/xilinx/xilinx.cc b/himbaechel/uarch/xilinx/xilinx.cc
+index 5ae062c8..9adfef61 100644
+--- a/himbaechel/uarch/xilinx/xilinx.cc
++++ b/himbaechel/uarch/xilinx/xilinx.cc
+@@ -1597,6 +1597,74 @@ delay_t XilinxImpl::estimateDelay(WireId src, WireId dst) const
+     return base;
+ }
+ 
++// The clock that samples (or launches) an IOLOGIC fabric port, or IdString() if the port is not
++// timed. is_clock is set for the cell's clock inputs. Data paths to the pad (D, DDLY, OFB, OQ, TQ,
++// DATAOUT...) stay untimed: they are dedicated and fixed by the I/O site.
++IdString XilinxImpl::iologic_port_clock(const CellInfo *cell, IdString port, bool &is_clock) const
++{
++    static const std::regex re0("D[1-8]|T[1-4]|OCE|TCE|RST"), re1("Q[1-8]|BITSLIP|CE1|CE2|RST"),
++            re2("CNTVALUEIN[0-4]|CNTVALUEOUT[0-4]|LD|LDPIPEEN|CE|INC|REGRST");
++    is_clock = false;
++    const std::string p = port.str(ctx);
++    if (cell->type == id_OSERDESE2_OSERDESE2) {
++        if (port.in(id_CLK, id_CLKDIV)) {
++            is_clock = true;
++            return IdString();
++        }
++        if (std::regex_match(p, re0))
++            return id_CLKDIV;
++    } else if (cell->type == id_ISERDESE2_ISERDESE2) {
++        if (port.in(id_CLK, id_CLKB, id_CLKDIV, id_CLKDIVP, id_OCLK, id_OCLKB)) {
++            is_clock = true;
++            return IdString();
++        }
++        if (std::regex_match(p, re1))
++            return id_CLKDIV;
++    } else if (cell->type.in(id_IDELAYE2_IDELAYE2, id_ODELAYE2_ODELAYE2)) {
++        if (port == id_C) {
++            is_clock = true;
++            return IdString();
++        }
++        if (std::regex_match(p, re2))
++            return id_C;
++    }
++    return IdString();
++}
++
++TimingPortClass XilinxImpl::getPortTimingClass(const CellInfo *cell, IdString port, int &clockInfoCount) const
++{
++    bool is_clock;
++    IdString clk = iologic_port_clock(cell, port, is_clock);
++    if (is_clock)
++        return TMG_CLOCK_INPUT;
++    if (clk != IdString()) {
++        const NetInfo *cn = cell->getPort(clk);
++        if (cn == nullptr || cn->driver.cell == nullptr)
++            return TMG_IGNORE;
++        clockInfoCount = 1;
++        return cell->ports.at(port).type == PORT_OUT ? TMG_REGISTER_OUTPUT : TMG_REGISTER_INPUT;
++    }
++    if (cell->type.in(id_OSERDESE2_OSERDESE2, id_ISERDESE2_ISERDESE2, id_IDELAYE2_IDELAYE2, id_ODELAYE2_ODELAYE2))
++        return TMG_IGNORE;
++    return ctx->get_port_timing_class_default(cell, port, clockInfoCount);
++}
++
++TimingClockingInfo XilinxImpl::getPortClockingInfo(const CellInfo *cell, IdString port, int index) const
++{
++    bool is_clock;
++    IdString clk = iologic_port_clock(cell, port, is_clock);
++    if (clk == IdString())
++        return ctx->get_port_clocking_info_default(cell, port, index);
++    // Nominal 7-series values (DS182, -2): setup ~0.5 ns, hold ~0.1 ns, clock-to-out ~0.6 ns
++    TimingClockingInfo info;
++    info.clock_port = clk;
++    info.edge = RISING_EDGE;
++    info.setup = DelayPair(500);
++    info.hold = DelayPair(100);
++    info.clockToQ = DelayQuad(600);
++    return info;
++}
++
+ delay_t XilinxImpl::predictDelay(BelId src_bel, IdString src_pin, BelId dst_bel, IdString dst_pin) const
+ {
+     bool both_bels_known = src_bel != BelId() && dst_bel != BelId();
+diff --git a/himbaechel/uarch/xilinx/xilinx.h b/himbaechel/uarch/xilinx/xilinx.h
+index 327c06f6..d0c66adf 100644
+--- a/himbaechel/uarch/xilinx/xilinx.h
++++ b/himbaechel/uarch/xilinx/xilinx.h
+@@ -250,6 +250,11 @@ struct XilinxImpl : HimbaechelAPI
+     bool load_delay_matrix(const std::string &path);
+     void save_delay_matrix(const std::string &path) const;
+ 
++    // IOLOGIC (SERDES, IDELAY/ODELAY) fabric ports have no timing in the database: model them as
++    // registers so the paths to and from the fabric are analysed and placed timing-driven
++    TimingPortClass getPortTimingClass(const CellInfo *cell, IdString port, int &clockInfoCount) const override;
++    TimingClockingInfo getPortClockingInfo(const CellInfo *cell, IdString port, int index) const override;
++    IdString iologic_port_clock(const CellInfo *cell, IdString port, bool &is_clock) const;
+     delay_t predictDelay(BelId src_bel, IdString src_pin, BelId dst_bel, IdString dst_pin) const override;
+     delay_t estimateDelay(WireId src, WireId dst) const override;
+     BoundingBox getRouteBoundingBox(WireId src, WireId dst) const override;

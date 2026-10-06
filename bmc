@@ -1,0 +1,25 @@
+#!/bin/bash
+# bmc: the card host's BMC over the LAN (IPMI 2.0 lanplus). Works when that host is hung or off.
+#
+#   bmc status            power state, restore policy, temperatures
+#   bmc on | off | cycle  chassis power (off/cycle cut the FPGA card's power; ask first)
+#   bmc <ipmitool args>   anything else, e.g. bmc sel elist, bmc sdr
+#
+# Needs ipmitool, BMC_HOST (the BMC's address; or ~/.config/dino-bmc.host) and the password in
+# ~/.config/dino-bmc.pass (mode 600, never in the repo). BMC_USER defaults to admin.
+set -eo pipefail
+pass=${BMC_PASS_FILE:-$HOME/.config/dino-bmc.pass}
+[[ -r $pass ]] || { echo "missing $pass (BMC password, mode 600)" >&2; exit 2; }
+IPMI_PASSWORD=$(<"$pass"); export IPMI_PASSWORD
+host=${BMC_HOST:-$(cat "$HOME/.config/dino-bmc.host" 2>/dev/null || true)}
+[[ -n $host ]] || { echo "set BMC_HOST or write the address to ~/.config/dino-bmc.host" >&2; exit 2; }
+I=(ipmitool -I lanplus -H "$host" -U "${BMC_USER:-admin}" -E)
+case ${1:-status} in
+  status) "${I[@]}" chassis status | sed -n '1p;6,7p'; "${I[@]}" sdr type temperature ;;
+  on)     "${I[@]}" chassis power on ;;
+  off|cycle)
+          [[ ${2:-} == --yes ]] || { echo "this cuts the host's power (and the FPGA card's); rerun: bmc $1 --yes" >&2; exit 2; }
+          "${I[@]}" chassis power "$1" ;;
+  help|-h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)      "${I[@]}" "$@" ;;
+esac

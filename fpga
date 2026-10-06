@@ -1,0 +1,123 @@
+#!/bin/bash
+# fpga: common operations on the YPCB-00338-1P1 in dino. Run from anywhere.
+#
+# Off the card host (FPGA_HOST, default dino) it syncs this tree to $FPGA_HOST:~/hw (no PDFs, no flash
+# images) and runs itself there over ssh. File arguments are paths relative to this tree.
+#
+#   fpga status                 config state: DONE/INIT (IR), DONE/INIT_B/AC24 pads
+#   fpga detect                 JTAG chain (openFPGALoader)
+#   fpga build <design dir> [top]  openXC7 build, e.g. designs/blinky -> designs/blinky/build/blinky.bit
+#                               (env BOARD_FASM= builds without board.fasm; FREQ= sets the timing target)
+#   fpga load <file.bit|.bin>   load into SRAM over JTAG (xsdb), report DONE
+#   fpga pins                   boundary-scan the LED pins for 4.5 s, report drive and blink rates
+#   fpga user1                  read hello's JTAG USER1 counter (magic + clock rate)
+#   fpga bscan PIN... [--n N]   boundary-scan any pins: output enable, level, toggling
+#   fpga check <design dir> [args]  run the design's check.py (reads its USER registers, prints PASS/FAIL)
+#   fpga memtest [args]         DDR3 memory test on the loaded designs/uberddr3 (memtest.py --help)
+#   fpga temp [n] [secs]        XADC temperature and rails (Vivado Lab, ~20 s)
+#   fpga jprogram               clear the FPGA; it then boots the factory image from flash
+#   fpga fuses                  read eFUSE registers (read-only)
+#   fpga flash-readback <out>   read the whole BPI flash (Vivado Lab, ~60 s, read-only)
+#   fpga pcie-cycle <file.bit>  remove the FPGA's PCIe device, load the bitstream, rescan, list it (sudo)
+#   fpga bios <file.bit> [secs] [cmd...]  load a LiteX SoC, capture its BIOS console over the JTAG UART,
+#                               and type each cmd (one per argument) after the boot output
+#   fpga bmc                    BMC: power state, temperatures, fans (ipmitool, in-band)
+#   fpga power-cycle --yes      cold power cycle of dino via the BMC (takes dino down ~2 min)
+#   fpga sync                   only copy this tree to the card host
+#
+# Builds run locally when ~/opt/openxc7 exists here (copied from dino), else on dino.
+set -eo pipefail
+HOST=${FPGA_HOST:-dino}
+HW=$(cd "$(dirname "$0")" && pwd)
+
+# Builds run here when this machine has the toolchain (buzz: far faster single-thread than dino,
+# and yosys is single-threaded); only the result goes to dino. FPGA_BUILD_REMOTE=1 builds on dino.
+if [[ ${1:-} == build && $(hostname -s) != "$HOST" && -z ${FPGA_BUILD_REMOTE:-} && -r ~/opt/openxc7/export.sh ]]; then
+    "$HW/tools/xc7-build.sh" "$HW/$2" ${3:+"$3"}
+    rsync -a --mkpath "$HW/$2/${BUILD:-build}/" "$HOST:hw/$2/${BUILD:-build}/"
+    exit 0
+fi
+
+if [[ $(hostname -s) != "$HOST" ]]; then
+    rsync -a --delete --exclude 'datasheets/*.pdf' --exclude 'factory-flash/*.bin' \
+          --exclude '__pycache__' --exclude 'build*/' "$HW/" "$HOST:hw/"
+    [[ ${1:-} == sync ]] && { echo "synced to $HOST:hw/"; exit 0; }
+    # build output comes back so the .bit is visible locally too
+    tty=; [[ -t 0 ]] && tty=-t
+    envs=; for v in BOARD_FASM FREQ BUILD NEXTPNR_ARGS THREADS CHIPDB TOOL_PATH TIMING_MHZ SYNTH_ARGS; do [[ -v $v ]] && envs+="$v=$(printf %q "${!v}") "; done
+    rc=0; ssh $tty "$HOST" "cd hw && $envs./fpga $(printf '%q ' "$@")" || rc=$?
+    [[ ${1:-} == build && $rc == 0 ]] && rsync -a "$HOST:hw/$2/${BUILD:-build}/" "$HW/$2/${BUILD:-build}/"
+    exit $rc
+fi
+
+S=$HW/board/ypcb-00338-1p1/scripts
+# xsdb and hw_server (JTAG register access, loads) and Vivado Lab (flash readback, XADC): AMD's free tools
+vivado_env() { source "${XSDB_SETTINGS:-/opt/Xilinx/2026.1/Vivado/settings64.sh}" >/dev/null 2>&1; }
+lab_env()    { source "${VIVADO_LAB_SETTINGS:-$HOME/opt/Xilinx/2026.1/Vivado_Lab/settings64.sh}" >/dev/null 2>&1; }
+free_cable() {                       # one program owns the cable: wait until hw_server has really gone
+    pkill -x hw_server 2>/dev/null || true; pkill -x cs_server 2>/dev/null || true; pkill -9 -f "libexec/openocd" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x hw_server >/dev/null || break; sleep 0.5; done
+    pkill -9 -x hw_server 2>/dev/null || true; sleep 1
+}
+xsdb_run()   { vivado_env; timeout "${T:-120}" xsdb "$@" 2>&1 | grep -vE '^\s*$|^INFO|Copyright|\*\*\*|attempting to launch'; }
+lab_run()    { lab_env; (hw_server -d >/dev/null 2>&1 &); sleep 2
+               timeout "${T:-300}" vivado_lab -mode batch -nojournal -nolog -source "$@" </dev/null 2>&1; }
+abspath()    { [[ $1 = /* ]] && echo "$1" || echo "$HW/$1"; }
+
+cmd=${1:-help}; shift || true
+case $cmd in
+  status)   xsdb_run "$S/ir-status.xsdb.tcl"; xsdb_run "$S/cfgpins.xsdb.tcl" ;;
+  detect)   free_cable; /opt/oss-cad-suite/bin/openFPGALoader -c digilent_hs2 --detect 2>&1 | grep -vE '^Jtag frequency' ;;
+  build)    "$HW/tools/xc7-build.sh" "$(abspath "$1")" ${2:+"$2"} ;;
+  load)     f=$(abspath "$1"); [[ -s $f ]] || { echo "no such file: $f" >&2; exit 1; }
+            T=300 xsdb_run "$S/load.xsdb.tcl" "$f" ;;
+  pins)     xsdb_run "$S/pins-sample.xsdb.tcl" | python3 -c '
+import sys
+rows=[l.split() for l in sys.stdin if l.split() and l.split()[0].isdigit()]
+t=[int(r[0]) for r in rows]
+for k,name in ((0,"P30 led0"),(3,"M30 led1"),(6,"N30 led2")):
+    ctl=[r[1][k] for r in rows]; pad=[r[1][k+2] for r in rows]
+    e=[t[i] for i in range(1,len(pad)) if pad[i]!=pad[i-1]]
+    hz=(len(e)-1)/2/((e[-1]-e[0])/1000) if len(e)>2 else 0.0
+    drive="driven" if set(ctl)=={"0"} else ("TRI-STATED" if set(ctl)=={"1"} else "mixed")
+    print(f"{name}: {drive:10s} toggles={len(e):3d}  ~{hz:.2f} Hz  pad={pad[-1]}")
+print(f"({len(rows)} samples over {t[-1]-t[0]} ms; all pins tri-stated means the FPGA is not configured)")' ;;
+  user1)    xsdb_run "$S/user1-read.xsdb.tcl" ;;
+  bscan)    vivado_env; python3 "$HW/tools/bscan.py" "$@" ;;
+  check)    vivado_env; python3 "$(abspath "$1")/check.py" "${@:2}" ;;
+  memtest)  vivado_env; python3 "$HW/designs/uberddr3/memtest.py" "$@" ;;
+  temp)     T=300 lab_run "$S/xadc-temp.vivado.tcl" -tclargs "${1:-1}" "${2:-5}" | grep -E '^T=|ERROR' ;;
+  jprogram) xsdb_run "$S/jprogram.xsdb.tcl" | sed -n '1p;$p'
+            echo "(IR capture 0x35 = DONE: the factory image booted from flash)" ;;
+  fuses)    xsdb_run "$S/fuse-read.xsdb.tcl" | grep -E '=' ;;
+  bios)     f=$(abspath "$1"); T=300 xsdb_run "$S/load.xsdb.tcl" "$f" | grep -E "fpga:|right after"
+            free_cable; source ~/venv/litex/bin/activate; export PATH=/opt/oss-cad-suite/bin:$PATH
+            secs=${2:-25}; log=$(mktemp)
+            shift 2 2>/dev/null || shift $#
+            { sleep 15; for c in "$@"; do printf '%s\r' "$c"; sleep 4; done; sleep $((secs + 3)); } |
+                script -q -c "timeout $((secs + 4 * $#)) litex_term jtag --jtag-config=$HW/board/ypcb-00338-1p1/openocd.cfg" "$log" >/dev/null 2>&1
+            tr -d '\r' < "$log" | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/(Write|Read): 0x[0-9a-f]+-0x[0-9a-f]+ [0-9.]+[KMG]?i?B +//g' | grep -vE '^\s*$|^Script (started|done)'
+            rm -f "$log"; pkill -9 -f "libexec/openocd" 2>/dev/null || true ;;   # timeout leaves litex_term's openocd behind
+  pcie-cycle)
+            for d in /sys/bus/pci/devices/*; do
+                [[ $(<"$d/vendor") == 0x10ee ]] && echo 1 | sudo -n tee "$d/remove" >/dev/null && echo "removed ${d##*/}"
+            done
+            f=$(abspath "$1"); T=300 xsdb_run "$S/load.xsdb.tcl" "$f" | grep -E "fpga:|right after"
+            sleep 2; echo 1 | sudo -n tee /sys/bus/pci/rescan >/dev/null; sleep 1
+            lspci -nn -d 10ee: || echo "no Xilinx device after rescan"
+            for d in /sys/bus/pci/devices/*; do
+                [[ $(<"$d/vendor") == 0x10ee ]] && echo "${d##*/}: link $(<"$d/current_link_speed") x$(<"$d/current_link_width")"
+            done ;;
+  flash-readback)
+            out=$(abspath "${1:?usage: fpga flash-readback <out.bin>}")
+            T=600 lab_run "$S/flash-readback.vivado.tcl" -tclargs "$out" | grep -E 'READBACK|ERROR'
+            ls -l "$out"; sha256sum "$out" ;;
+  bmc)      sudo -n ipmitool chassis status | sed -n '1p;6,7p'
+            sudo -n ipmitool sdr type temperature; sudo -n ipmitool sdr type fan | grep -v 'No Reading' ;;
+  power-cycle)
+            [[ ${1:-} == --yes ]] || { echo "this cold-cycles dino (the FPGA card loses power); rerun with --yes" >&2; exit 2; }
+            echo "power cycling $(hostname) via the BMC in 3 s; reconnect in ~2 min"
+            sleep 3; sudo -n ipmitool chassis power cycle ;;
+  help|-h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)        echo "unknown command: $cmd (fpga help)" >&2; exit 2 ;;
+esac

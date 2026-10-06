@@ -1,0 +1,15 @@
+# Downloaded reference documents: fetch with ./fetch-docs.sh
+datasheets/*.pdf
+datasheets/*.txt
+# Card flash images: large, and the factory image is vendor content (keep the .sha256 and README)
+board/*/factory-flash/*.bin
+# Build products (designs/*/build/ and stray outputs)
+build*/
+*.json
+*.fasm
+!board/*/board.fasm
+*.frames
+*.bit
+*.bin
+*.bba
+references/third-party/

@@ -1,0 +1,7 @@
+# Board-level FASM appended to every openXC7 build for the YPCB-00338-1P1 (tools/xc7-build.sh).
+#
+# AC24 (IO_25_14, LIOB33_SING_X0Y150 IOB_Y0) drives a board reset. Left at the unused-pin default
+# (PULLDOWN), the card resets itself the moment startup releases the I/O: DONE never goes high and
+# the FPGA is back to unconfigured. Pull it up (or drive it high from the design).
+# Sources: our bisection 2026-10-05; TiferKing/ypcb_00338_1p1_hack#3; zollij's write-up (README).
+LIOB33_SING_X0Y150.IOB_Y0.PULLTYPE.PULLUP

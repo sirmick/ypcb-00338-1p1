@@ -1,0 +1,23 @@
+diff --git a/himbaechel/uarch/xilinx/pack.cc b/himbaechel/uarch/xilinx/pack.cc
+index 7fe4fb12..234874ae 100644
+--- a/himbaechel/uarch/xilinx/pack.cc
++++ b/himbaechel/uarch/xilinx/pack.cc
+@@ -1182,6 +1182,18 @@ void XC7Packer::pack_bram()
+                 ci->disconnectPort(id_DIPADIP0);
+                 ci->disconnectPort(id_DIPADIP1);
+             }
++            // In the x9 modes each RAMB18 half stores four of the eight data bits and its own
++            // copy of the parity bit, taken from its own parity pin: DIPxDIP0 feeds one half and
++            // DIPxDIP1 the other. The logical cell only drives DIPxDIP[0], so mirror it onto
++            // DIPxDIP1 (as the x1 case does for DIxDI1); otherwise one half writes parity from an
++            // unconnected pin and every other word loses its ninth bit.
++            for (auto ab : {std::make_pair(id_WRITE_WIDTH_A, std::make_pair(id_DIPADIP0, id_DIPADIP1)),
++                            std::make_pair(id_WRITE_WIDTH_B, std::make_pair(id_DIPBDIP0, id_DIPBDIP1))}) {
++                if (int_or_default(ci->params, ab.first, 0) == 9 && ci->getPort(ab.second.first) != nullptr) {
++                    ci->disconnectPort(ab.second.second);
++                    ci->connectPort(ab.second.second, ci->getPort(ab.second.first));
++                }
++            }
+             if (int_or_default(ci->params, id_WRITE_WIDTH_B, 0) == 1) {
+                 ci->disconnectPort(id_DIBDI1);
+                 ci->connectPort(id_DIBDI1, ci->getPort(id_DIBDI0));
