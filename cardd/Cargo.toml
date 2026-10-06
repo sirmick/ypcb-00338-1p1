@@ -1,0 +1,14 @@
+[package]
+name = "cardd"
+version = "0.1.0"
+edition = "2021"
+description = "Host backend for the YPCB-00338-1P1 card: serves its virtio devices from userland over VFIO"
+license = "MIT"
+publish = false
+
+# No dependencies yet. The backend's few will be libc, vfio-bindings, seccompiler and landlock,
+# vendored (see SOC-ROADMAP.md).
+[dependencies]
+
+# Its own workspace: hw/ is also published as a repository of its own.
+[workspace]

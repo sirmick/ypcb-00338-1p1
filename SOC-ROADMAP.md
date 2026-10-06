@@ -43,13 +43,15 @@ Decisions (owner, 2026-10-06):
 - **Two phases:** first `cardd` walks the rings through mailbox copy commands; later a forwarder in
   the fabric pushes whole requests.
 
-## Layout (planned)
+## Layout
 
 ```text
-soc/          SpinalHDL project (sbt): the SoC, shims, mailbox, DMA engine; SpinalSim tests
-soc/contract/ the contract and its generators (Scala, Rust, device tree, transcripts)
-cardd/        the host backend (Rust): VFIO, inboxes, split queue, blk, net, console; tests, fuzzing
-linux/        OpenSBI, kernel config, device trees, Debian root filesystem scripts
+soc/                       SpinalHDL project (sbt): the SoC, shims, mailbox, DMA engine; `sbt test`
+soc/src/.../card/contract/ the contract (Contract.scala), transcripts, generator (Generate.scala)
+soc/gen/                   generated: contract.dtsi, CONTRACT.md
+cardd/                     the host backend (Rust, no dependencies yet); `cargo test`
+cardd/src/contract.rs      generated from the contract
+linux/                     (S5) OpenSBI, kernel config, device trees, Debian root filesystem scripts
 ```
 
 ## Where we are (2026-10-06)
@@ -57,7 +59,7 @@ linux/        OpenSBI, kernel config, device trees, Debian root filesystem scrip
 | # | Stage | Status | Proof so far |
 |---|---|---|---|
 | S0 | Toolchain, and the core's cost under openXC7 | ✅ done | VexiiRiscv's MicroSoc with LiteX's "debian" core options (RV64IMAFDC, Sv39, 4-way L1s, BTB/RAS/GShare): 16.5k LUTs, 8.5k FFs, 54 BRAM, 16 DSP, place and route 2 min, nextpnr Fmax 118.7 MHz (RV64IMAC: 10.9k LUTs, 124.5 MHz). A self-test of integer, M, A and double-precision FPU instructions passes on the card at 50 MHz ([designs/vexii-s0](designs/vexii-s0/)) |
-| S1 | The contract and its generators | ⬜ | |
+| S1 | The contract and its generators | ✅ done | [Contract.scala](soc/src/main/scala/card/contract/Contract.scala) generates Rust ([cardd/src/contract.rs](cardd/src/contract.rs)), a device-tree fragment, [a readable table](soc/gen/CONTRACT.md) and shared transcripts; the RTL's message encoder (SpinalSim, 12 kinds) and cardd (5 tests) produce identical bytes; editing the source makes the freshness test fail until all four outputs are regenerated |
 | S2 | virtio-mmio shim and the mailbox, tested both sides | ⬜ | |
 | S3 | Phase-1 copy engine; hostile cases; co-simulation | ⬜ | |
 | S4 | On the card: link latency and card-initiated DMA | ⬜ | |
@@ -86,6 +88,11 @@ time, not area, is the thing to watch.
 mailbox command format, the magic and the version; generators emit SpinalHDL and Rust constants, a
 device-tree fragment and test transcripts (guest actions in, host-inbox records expected;
 completions in, used-ring contents expected). A change to the source changes all four.
+
+**Done 2026-10-06.** The contract is a Scala object, so the RTL reads it directly; records and commands
+are 64 bytes with the sequence number at both ends. Running it: `cd soc && sbt test` (SpinalSim,
+Verilator) and `cd cardd && cargo test`; after editing the contract, `sbt "runMain
+card.contract.Generate"`.
 
 ## S2: the shim and the mailbox
 

@@ -3,6 +3,13 @@
 What we did and learned, newest first. Current facts live in [README.md](README.md); this page keeps
 the path, including conclusions that turned out wrong, so nobody re-derives them.
 
+## 2026-10-06 (late evening): the host-link contract
+
+- S1: one Scala contract (BAR0, 64-byte records and commands, virtio-mmio registers, the guest map) generates
+  cardd's Rust constants, a device-tree fragment (dtc-checked), a table and transcripts. SpinalHDL 1.12.2's
+  message encoder and cardd agree byte for byte; a source edit trips the freshness test until regenerated.
+- Scala's stripMargin also strips interpolated lines that start with `|` (it ate the Markdown tables).
+
 ## 2026-10-06 (evening): a 64-bit core with an FPU runs on the card
 
 - SoC roadmap started ([SOC-ROADMAP.md](../../SOC-ROADMAP.md)): Debian on four VexiiRiscv cores, virtio

@@ -82,6 +82,8 @@ back in when that host is hung or off.
 ├── designs/                   test designs, each with a check.py
 ├── tools/                     xc7-build.sh, build-nextpnr.sh, jtagdr.py, bscan.py, bitstream/, docs
 ├── upstream/                  our nextpnr patches (applied by tools/build-nextpnr.sh)
+├── soc/                       the card SoC in SpinalHDL, with SpinalSim tests (SOC-ROADMAP.md)
+├── cardd/                     the host backend in Rust (SOC-ROADMAP.md)
 ├── hosts/                     our lab setup, as an example
 ├── datasheets/                index (PDFs via fetch-docs.sh)
 └── references/                index of other people's work; third-party/ copies (ignored)
