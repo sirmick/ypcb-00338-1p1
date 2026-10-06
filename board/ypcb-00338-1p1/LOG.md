@@ -3,6 +3,16 @@
 What we did and learned, newest first. Current facts live in [README.md](README.md); this page keeps
 the path, including conclusions that turned out wrong, so nobody re-derives them.
 
+## 2026-10-06 (evening): a 64-bit core with an FPU runs on the card
+
+- SoC roadmap started ([SOC-ROADMAP.md](../../SOC-ROADMAP.md)): Debian on four VexiiRiscv cores, virtio
+  over PCIe through a userland backend. Toolchain on buzz: JDK 21, Verilator, sbt via coursier, RISC-V
+  cross compilers, dtc, mmdebstrap.
+- S0: VexiiRiscv's MicroSoc with LiteX's "debian" core options: 16.5k LUTs, routes in 2 min, nextpnr
+  Fmax 118.7 MHz. Its 227 LUTRAM primitives place fine. A bare-metal self-test (integer, M, A, FMA,
+  square root, single and double precision) passes on the card: LED0 at 1.99 Hz, timed with rdcycle
+  at 50 MHz.
+
 ## 2026-10-06 (morning): cold start, gate 9 done
 
 - Clean poweroff of dino, BMC reported off within 6 s, 60 s off, `bmc on` over LAN: ssh back in 2 min 15 s.

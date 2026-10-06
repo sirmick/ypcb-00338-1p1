@@ -38,6 +38,7 @@ and fixes, are in [UPSTREAM.md](UPSTREAM.md).
 | [tools/jtag.md](tools/jtag.md) | cables, xsdb / Vivado Lab / openFPGALoader, remote checks (boundary scan, USER1, XADC) |
 | [designs/README.md](designs/README.md) | the test designs and what each proves |
 | [ROADMAP.md](ROADMAP.md) | the gates, their proofs, and what is still open |
+| [SOC-ROADMAP.md](SOC-ROADMAP.md) | next: Debian on four VexiiRiscv cores, virtio over PCIe from a userland backend |
 | [UPSTREAM.md](UPSTREAM.md) | toolchain bugs: evidence, patches, status |
 | [hosts/README.md](hosts/README.md) | how our lab is set up (a card host and a build host), as an example |
 | [datasheets/README.md](datasheets/README.md) | which datasheet, which table |
