@@ -86,7 +86,7 @@ uses banks 11–13 and channel 1 banks 16–18, SSTL15 at 1.5 V (package file:
 
 | Signal | Pin(s) | Notes |
 |---|---|---|
-| SYS_CLK 50 MHz | AA28 | MRCC, bank 14. **50 MHz measured** (the original XDC implies 100) |
+| SYS_CLK 50 MHz | AA28 | MRCC, bank 14. **50 MHz measured** (as TiferKing's board files say) |
 | CLK200 #0 (p/n) | AH27 / AH28 | bank 12, DDR ch0 MIG reference; LiteX uses LVDS_25, TiferKing LVDS + DQS_BIAS |
 | CLK200 #1 (p/n) | G25 / G26 | bank 17, DDR ch1 MIG reference |
 | RESETN (SW2?) | R28 | design reset input |
