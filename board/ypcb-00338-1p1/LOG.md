@@ -26,7 +26,8 @@ the path, including conclusions that turned out wrong, so nobody re-derives them
 - memtest's 7 MB/s is the core computing a hash per word, not the memory: membench measures 68 MB/s
   for line reads. Re-asserting GUEST_RESET on a running guest now also resets the bridges the cores
   drive, and they drop late responses instead of blocking the arbiter (a simulation test resets the
-  guest mid-boot twice).
+  guest mid-boot twice). On the card (rebuilt: SoC 68 MHz, controller 148 MHz): `card up --load`, then
+  `card reset` twice while membench streamed 512 MiB; each reload checked out and the guest came back.
 - `hw/card` wraps it: `card up` (load and warm-reboot only when needed, bind vfio-pci, boot),
   `card console` (raw terminal over a Unix socket, Ctrl-] detaches), `card reset`. The initramfs has
   every BusyBox applet, static bash, top, membench.
