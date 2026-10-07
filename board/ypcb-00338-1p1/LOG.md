@@ -3,6 +3,34 @@
 What we did and learned, newest first. Current facts live in [README.md](README.md); this page keeps
 the path, including conclusions that turned out wrong, so nobody re-derives them.
 
+## 2026-10-06 (night): Linux boots on the card
+
+- S5. The contract went to version 2: GUEST_RESET (cores held at power-up; the boot window into main
+  memory open only while held), STATUS bit 3 (main memory ready), and the 16550 behind CONSOLE_TX and
+  CONSOLE_RX. VexiiRiscv's LiteX cluster is the core (TileLink inside, AXI at its edges), wrapped by
+  SocCore and, on the card, CardS5 (three clock domains).
+- In Verilator with the real cluster: the first runs stopped at time 0 on the netlist's own invariant
+  checks (registers it never resets: zero-initialised simulation fixes it); then a module-name clash
+  with our SpinalHDL modules (the cluster's are now prefixed `Vx_`); then the cluster's RAM black boxes
+  (soc/vexii-rams.v). The line arbiter answered the wrong master (a bit-order slip with `Cat`; a unit
+  test now covers it). OpenSBI's banner then arrived through CONSOLE_TX records, and stopped on a
+  TileLink "decoder miss": the device region (0-2 GiB) also covered the cluster's CLINT and PLIC, so a
+  timer access decoded twice. Narrowed to 0x1000_0000-0x1fff_ffff, OpenSBI reaches its payload in
+  12.8 M cycles. (What looked like lost console lines were carriage returns redrawing the terminal.)
+- On the card: place and route 42 min (the PCIe MMCM's LOCKED net is slow to route out of its CMT, as in
+  S4: 5 M-iteration warnings, then it routes). DDR3 calibrated and passed its self-test on the first
+  load. cardd loaded OpenSBI and Linux at 26 MB/s; stock Linux 6.12 booted to a BusyBox shell in 10 s.
+  memtest: 2 x 256 MiB, then 1.5 GiB, 0 errors.
+- cardd's waits were a count of polls (1 M), not a time: a 1 MiB copy at 26 MB/s takes about as long,
+  and the second boot timed out. Now a 2 s deadline.
+- memtest's 7 MB/s is the core computing a hash per word, not the memory: membench measures 68 MB/s
+  for line reads. Re-asserting GUEST_RESET on a running guest now also resets the bridges the cores
+  drive, and they drop late responses instead of blocking the arbiter (a simulation test resets the
+  guest mid-boot twice).
+- `hw/card` wraps it: `card up` (load and warm-reboot only when needed, bind vfio-pci, boot),
+  `card console` (raw terminal over a Unix socket, Ctrl-] detaches), `card reset`. The initramfs has
+  every BusyBox applet, static bash, top, membench.
+
 ## 2026-10-06 (evening): the card's DMA through VFIO
 
 - designs/soc-s4: PcieLink on the hard block (Gen1 x1, 62.5 MHz user clock) with 64 KiB of block RAM

@@ -239,6 +239,14 @@ case class HostLink(slots: Int) extends Component {
     val hostReadRsp = slave(Stream(Bits(8 * Message.Size bits)))
     val mem = master(Stream(MemCmd()))
     val memRsp = slave(Stream(Bits(8 * Message.Size bits)))
+    /** CONSOLE_TX record bodies from the 16550; dropped while the card is not enabled */
+    val consoleTx = slave(Stream(Bits(8 * Message.Size bits)))
+    /** CONSOLE_RX's bytes, one per clock */
+    val consoleRx = master(Flow(Bits(8 bits)))
+    /** GUEST_RESET: hold the guest's cores in reset */
+    val guestReset = out Bool ()
+    /** main memory is calibrated and tested (STATUS bit 3) */
+    val ramReady = in Bool ()
   }
   private def r(n: String) = U(Bar0.reg(n), 16 bits)
   private val entries = 1 << Bar0.CmdEntriesLog2
@@ -252,6 +260,8 @@ case class HostLink(slots: Int) extends Component {
   val stagingSize = Reg(Bits(32 bits)) init 0
   val cmdProduced = Reg(UInt(32 bits)) init 0
   val enable = Reg(Bool()) init False
+  val guestReset = Reg(Bool()) init True
+  io.guestReset := guestReset
   val refused = Reg(Bool()) init False
   val full = Bool()
 
@@ -266,7 +276,8 @@ case class HostLink(slots: Int) extends Component {
     is(r("VERSION")) { io.host.rdata := B(Contract.Version, 32 bits) }
     is(r("SLOTS")) { io.host.rdata := B(slots, 32 bits) }
     is(r("CMD_ENTRIES_LOG2")) { io.host.rdata := B(Bar0.CmdEntriesLog2, 32 bits) }
-    is(r("STATUS")) { io.host.rdata := (refused ## full ## enable).resized }
+    is(r("STATUS")) { io.host.rdata := (io.ramReady ## refused ## full ## enable).resized }
+    is(r("GUEST_RESET")) { io.host.rdata := guestReset.asBits.resized }
   }
   when(write) {
     switch(a) {
@@ -279,6 +290,7 @@ case class HostLink(slots: Int) extends Component {
       is(r("STAGING_SIZE")) { stagingSize := io.host.wdata }
       is(r("CMD_PRODUCED")) { cmdProduced := io.host.wdata.asUInt }
       is(r("ENABLE")) { enable := io.host.wdata(0) }
+      is(r("GUEST_RESET")) { guestReset := io.host.wdata(0) }
     }
   }
   // enabling starts a new session: a restarted host begins both sequences at 1 again, and ring entries
@@ -325,6 +337,12 @@ case class HostLink(slots: Int) extends Component {
   private val h2c = Contract.command("COPY_FROM_HOST")
   private val push = Contract.command("USED_PUSH")
   private val irq = Contract.command("INTERRUPT")
+  private val conRx = Contract.command("CONSOLE_RX")
+  private val conBytes = conRx.field("data").bytes
+  val conCount = Reg(UInt(log2Up(conBytes + 1) bits))
+  val conIndex = Reg(UInt(log2Up(conBytes + 1) bits))
+  io.consoleRx.valid := False
+  io.consoleRx.payload := Pack.field(conRx, buf, "data").subdivideIn(8 bits)(conIndex.resized)
   private def cf(l: Layout, n: String) = Pack.field(l, buf, n)
 
   // the line arithmetic of a copy: masks for the first and last lines, and the staging line
@@ -339,6 +357,10 @@ case class HostLink(slots: Int) extends Component {
   for (i <- 0 until Message.Size) copyMask(i) := U(i, lineBits bits) >= lo && U(i, lineBits bits) <= hi
   val hostLine = stagingAddr.asUInt + (staging(31 downto lineBits) @@ U(0, lineBits bits)).resize(64 bits) + (line - firstLine)
 
+  def insideBootWindow(x: UInt, n: UInt): Bool = {
+    val (base, size) = Contract.bootWindow
+    x >= U(base, 64 bits) && x.resize(65 bits) + n.resize(65 bits) <= U(BigInt(base) + BigInt(size), 65 bits)
+  }
   /** [x, x + n) lies wholly inside one DMA window. */
   def insideWindows(x: UInt, n: UInt): Bool = Contract.dmaWindows.map { case (base, size) =>
     val end = x.resize(65 bits) + n.resize(65 bits)
@@ -380,7 +402,7 @@ case class HostLink(slots: Int) extends Component {
 
   object S extends SpinalEnum {
     val IDLE, READ, EXEC, CHECK, C2H_READ, C2H_WAIT, C2H_WRITE, H2C_REQ, H2C_WAIT, H2C_WRITE, H2C_ACK, DONE,
-        PUSH_CHECK, PUSH_ELEM, PUSH_ELEM_ACK, PUSH_ELEM2, PUSH_ELEM2_ACK, PUSH_IDX, PUSH_IDX_ACK, ACK = newElement()
+        PUSH_CHECK, PUSH_ELEM, PUSH_ELEM_ACK, PUSH_ELEM2, PUSH_ELEM2_ACK, PUSH_IDX, PUSH_IDX_ACK, CON_RX, ACK = newElement()
   }
   val state = Reg(S()) init S.IDLE
   switch(state) {
@@ -412,6 +434,11 @@ case class HostLink(slots: Int) extends Component {
         guest := cf(c2h, "guest").asUInt
         staging := cf(c2h, "staging").asUInt
         state := S.CHECK
+      } elsewhen (k === conRx.kind) {
+        val n = cf(conRx, "count").asUInt
+        conCount := (n > conBytes) ? U(conBytes, conCount.getWidth bits) | n.resized
+        conIndex := 0
+        state := S.CON_RX
       } elsewhen (k === push.kind) {
         pushQueue := cf(push, "queue").asUInt.resized
         pushEntry := cf(push, "len") ## cf(push, "id")
@@ -428,7 +455,7 @@ case class HostLink(slots: Int) extends Component {
         copyStatus := Contract.CopyStatus.BadLength; state := S.DONE
       } elsewhen (staging(lineBits - 1 downto 0) =/= guest(lineBits - 1 downto 0)) {
         copyStatus := Contract.CopyStatus.Misaligned; state := S.DONE
-      } elsewhen (!insideWindows(guest, len)) {
+      } elsewhen (!insideWindows(guest, len) && !(guestReset && insideBootWindow(guest, len))) {
         copyStatus := Contract.CopyStatus.OutsideWindow; state := S.DONE
       } otherwise {
         copyStatus := Contract.CopyStatus.Done
@@ -501,12 +528,16 @@ case class HostLink(slots: Int) extends Component {
         state := S.ACK
       }
     }
+    is(S.CON_RX) {
+      when(conIndex === conCount) { state := S.ACK } otherwise { io.consoleRx.valid := True; conIndex := conIndex + 1 }
+    }
     is(S.ACK) { ack.valid := True; when(ack.ready) { state := S.IDLE } }
   }
   when(restart) { cmdNext := 1 }
 
   // ---- the inbox writer: one stream of records, numbered 1, 2, 3, ..., never overrunning the host ----
-  val arbiter = StreamArbiterFactory().roundRobin.on(io.records.toSeq ++ Seq(done, ack))
+  val console = io.consoleTx.throwWhen(!enable) // nobody is listening: the guest's console must not block
+  val arbiter = StreamArbiterFactory().roundRobin.on(io.records.toSeq ++ Seq(console, done, ack))
   val seq = Reg(UInt(32 bits)) init 1
   when(restart) { seq := 1 }
   val outstanding = seq - 1 - inboxConsumed
@@ -542,8 +573,16 @@ case class CardLink(slots: Int = Contract.Map.VirtioSlots) extends Component {
     val mem = master(Stream(MemCmd()))
     val memRsp = slave(Stream(Bits(8 * Message.Size bits)))
     val irq = out Bits (slots bits)
+    /** the 16550 (register index 0-7) and its interrupt */
+    val uart = slave(RegBus(3))
+    val uartIrq = out Bool ()
+    val guestReset = out Bool ()
+    val ramReady = in Bool ()
   }
   val shims = (0 until slots).map(VirtioMmioShim(_))
+  val uart = Uart16550()
+  uart.io.bus <> io.uart
+  io.uartIrq := uart.io.irq
   val link = HostLink(slots)
   link.io.host <> io.host
   io.hostWrite << link.io.hostWrite
@@ -551,6 +590,10 @@ case class CardLink(slots: Int = Contract.Map.VirtioSlots) extends Component {
   link.io.hostReadRsp << io.hostReadRsp
   io.mem << link.io.mem
   link.io.memRsp << io.memRsp
+  link.io.consoleTx << uart.io.records
+  uart.io.rx << link.io.consoleRx
+  io.guestReset := link.io.guestReset
+  link.io.ramReady := io.ramReady
   val sel = io.guest.address(io.guest.address.high downto 12)
   for ((sh, i) <- shims.zipWithIndex) {
     sh.io.guest.valid := io.guest.valid && sel === i

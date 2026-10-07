@@ -44,8 +44,16 @@ case class PcieLink(slots: Int = Contract.Map.VirtioSlots) extends Component {
     val mem = master(Stream(MemCmd()))
     val memRsp = slave(Stream(Bits(8 * Message.Size bits)))
     val irq = out Bits (slots bits)
+    val uart = slave(RegBus(3))
+    val uartIrq = out Bool ()
+    val guestReset = out Bool ()
+    val ramReady = in Bool ()
   }
   val link = CardLink(slots)
+  link.io.ramReady := io.ramReady
+  link.io.uart <> io.uart
+  io.uartIrq := link.io.uartIrq
+  io.guestReset := link.io.guestReset
   link.io.guest <> io.guest
   io.mem << link.io.mem
   link.io.memRsp << io.memRsp

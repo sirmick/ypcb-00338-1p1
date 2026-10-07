@@ -28,7 +28,7 @@ case class Layout(name: String, kind: Int, doc: String, fields: Seq[Field]) {
 case class Reg(name: String, offset: Int, access: String, doc: String)
 
 object Contract {
-  val Version = 1
+  val Version = 2
   // "CARD" in ASCII, as BAR0 offset 0 reads it on a little-endian host
   val Magic = 0x44524143L
 
@@ -37,6 +37,7 @@ object Contract {
     val Clint = 0x02000000L;      val ClintSize = 0x10000L
     val Plic = 0x0c000000L;       val PlicSize = 0x600000L
     val Uart = 0x10000000L;       val UartSize = 0x100L;   val UartIrq = 10
+    val UartRegShift = 2          // 16550 registers 4 bytes apart, 32-bit accesses (QEMU's are byte-wide)
     val VirtioBase = 0x10001000L; val VirtioStride = 0x1000L; val VirtioSlots = 8
     def virtioIrq(slot: Int): Int = 1 + slot
     val RingRegion = 0x30000000L; val RingRegionSize = 0x10000L      // block RAM, uncached
@@ -100,7 +101,8 @@ object Contract {
       Reg("STAGING_SIZE", 0x028, "W", "host staging size in bytes"),
       Reg("CMD_PRODUCED", 0x030, "W", "doorbell: sequence number of the last command written"),
       Reg("ENABLE", 0x034, "W", "1 once the registers above are set; 0 stops the card's writes; 0 then 1 starts a new session (both sequences from 1)"),
-      Reg("STATUS", 0x038, "R", "bit 0 enabled, bit 1 inbox full, bit 2 a command was refused")
+      Reg("STATUS", 0x038, "R", "bit 0 enabled, bit 1 inbox full, bit 2 a command was refused, bit 3 main memory ready (calibrated and tested)"),
+      Reg("GUEST_RESET", 0x03c, "RW", "bit 0: 1 holds the guest's cores in reset (the power-up state); while it is 1, copies may also reach main memory (the boot window)")
     )
     def reg(n: String): Int = regs.find(_.name == n).getOrElse(sys.error(s"no BAR0 register $n")).offset
     val CmdRing = 0x1000
@@ -140,7 +142,7 @@ object Contract {
     Layout("FEATURES", 4, "the guest set FEATURES_OK: the features it accepted", Seq(f("features", 8, 8))),
     Layout("COPY_DONE", 5, "a copy command finished", Seq(
       f("tag", 8, 4), f("status", 12, 2, "0 done; 1 outside the DMA windows; 2 bad length or outside staging; 3 misaligned"))),
-    Layout("CONSOLE_TX", 6, "bytes the guest sent to the 16550", Seq(f("count", 8, 1), f("data", 12, 48))),
+    Layout("CONSOLE_TX", 6, "bytes the guest sent to the 16550 (dropped while the card is not enabled)", Seq(f("count", 8, 1), f("data", 12, 48))),
     Layout("CMD_ACK", 7, "commands consumed up to this sequence number", Seq(f("cmd_seq", 8, 4)))
   )
 
@@ -152,6 +154,8 @@ object Contract {
   object CopyStatus { val Done = 0; val OutsideWindow = 1; val BadLength = 2; val Misaligned = 3 }
   /** The DMA windows a guest range may lie in (S8 makes them programmable by the guest's kernel). */
   val dmaWindows = Seq((Map.DmaRegion, Map.DmaRegionSize), (Map.RingRegion, Map.RingRegionSize))
+  /** Open only while GUEST_RESET holds the cores: how the host loads firmware, kernel and initramfs. */
+  val bootWindow = (Map.Ram, Map.RamSize)
 
   val commands = Seq(
     Layout("COPY_TO_HOST", 1, "copy a guest range (checked against the window) into host staging", Seq(
@@ -161,7 +165,7 @@ object Contract {
     Layout("USED_PUSH", 3, "append {id, len} to a ready queue's used ring, then publish the new used index; refused if the ring lies outside the windows", Seq(
       f("queue", 8, 2), f("id", 12, 4), f("len", 16, 4))),
     Layout("INTERRUPT", 4, "set InterruptStatus bits (1 used buffer, 2 configuration change)", Seq(f("bits", 8, 4))),
-    Layout("CONSOLE_RX", 5, "bytes for the 16550's receive FIFO", Seq(f("count", 8, 1), f("data", 12, 48)))
+    Layout("CONSOLE_RX", 5, "bytes for the 16550's receive FIFO (count 0-48; bytes that do not fit set the overrun bit)", Seq(f("count", 8, 1), f("data", 12, 48)))
   )
 
   def record(n: String): Layout = records.find(_.name == n).getOrElse(sys.error(s"no record $n"))

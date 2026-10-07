@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 /// Contract version, read at BAR0 VERSION; cardd refuses any other.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 /// BAR0 MAGIC: "CARD".
 pub const MAGIC: u32 = 0x44524143;
 
@@ -127,8 +127,10 @@ pub mod bar0 {
         pub const CMD_PRODUCED: usize = 0x30;
         /// W 1 once the registers above are set; 0 stops the card's writes; 0 then 1 starts a new session (both sequences from 1)
         pub const ENABLE: usize = 0x34;
-        /// R bit 0 enabled, bit 1 inbox full, bit 2 a command was refused
+        /// R bit 0 enabled, bit 1 inbox full, bit 2 a command was refused, bit 3 main memory ready (calibrated and tested)
         pub const STATUS: usize = 0x38;
+        /// RW bit 0: 1 holds the guest's cores in reset (the power-up state); while it is 1, copies may also reach main memory (the boot window)
+        pub const GUEST_RESET: usize = 0x3c;
     }
     /// Per-slot programming registers, relative to SLOT_PROG_BASE + slot * SLOT_PROG_STRIDE.
     pub mod slot_reg {
@@ -155,6 +157,9 @@ pub mod copy_status {
 
 /// The DMA windows (base, size) a guest range in a copy or a used ring must lie wholly inside.
 pub const DMA_WINDOWS: &[(u64, u64)] = &[(0x100000000, 0x80000000), (0x30000000, 0x10000)];
+
+/// Main memory (base, size): copies may reach it only while GUEST_RESET holds the guest's cores.
+pub const BOOT_WINDOW: (u64, u64) = (0x80000000, 0x80000000);
 
 /// Records and commands: 64 bytes, little-endian, sequence number at both ends.
 pub mod message {
@@ -184,7 +189,7 @@ pub mod record {
     pub const FEATURES: Layout = Layout { name: "FEATURES", kind: 4, fields: &[Field { name: "features", offset: 8, bytes: 8 }] };
     /// a copy command finished
     pub const COPY_DONE: Layout = Layout { name: "COPY_DONE", kind: 5, fields: &[Field { name: "tag", offset: 8, bytes: 4 }, Field { name: "status", offset: 12, bytes: 2 }] };
-    /// bytes the guest sent to the 16550
+    /// bytes the guest sent to the 16550 (dropped while the card is not enabled)
     pub const CONSOLE_TX: Layout = Layout { name: "CONSOLE_TX", kind: 6, fields: &[Field { name: "count", offset: 8, bytes: 1 }, Field { name: "data", offset: 12, bytes: 48 }] };
     /// commands consumed up to this sequence number
     pub const CMD_ACK: Layout = Layout { name: "CMD_ACK", kind: 7, fields: &[Field { name: "cmd_seq", offset: 8, bytes: 4 }] };
@@ -202,7 +207,7 @@ pub mod command {
     pub const USED_PUSH: Layout = Layout { name: "USED_PUSH", kind: 3, fields: &[Field { name: "queue", offset: 8, bytes: 2 }, Field { name: "id", offset: 12, bytes: 4 }, Field { name: "len", offset: 16, bytes: 4 }] };
     /// set InterruptStatus bits (1 used buffer, 2 configuration change)
     pub const INTERRUPT: Layout = Layout { name: "INTERRUPT", kind: 4, fields: &[Field { name: "bits", offset: 8, bytes: 4 }] };
-    /// bytes for the 16550's receive FIFO
+    /// bytes for the 16550's receive FIFO (count 0-48; bytes that do not fit set the overrun bit)
     pub const CONSOLE_RX: Layout = Layout { name: "CONSOLE_RX", kind: 5, fields: &[Field { name: "count", offset: 8, bytes: 1 }, Field { name: "data", offset: 12, bytes: 48 }] };
     pub const ALL: &[&Layout] = &[&COPY_TO_HOST, &COPY_FROM_HOST, &USED_PUSH, &INTERRUPT, &CONSOLE_RX];
 }

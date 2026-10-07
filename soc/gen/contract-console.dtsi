@@ -1,0 +1,17 @@
+/* Generated from soc/src/main/scala/card/contract/Contract.scala by Generate.scala. Do not edit. */
+/* The card's console: a 16550 whose wire is the host link (CONSOLE_TX and CONSOLE_RX). The including
+ * tree provides the PLIC with the label `plic`, and the clock: &card_uart { clock-frequency = <...>; }; */
+/ {
+	soc {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		card_uart: serial@10000000 {
+			compatible = "ns16550a";
+			reg = <0x0 0x10000000 0x0 0x100>;
+			reg-shift = <2>;
+			reg-io-width = <4>;
+			interrupts = <10>;
+			interrupt-parent = <&plic>;
+		};
+	};
+};

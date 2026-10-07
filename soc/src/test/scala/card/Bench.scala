@@ -37,6 +37,8 @@ class Bench(dut: CardLink) {
   val memRsp = mutable.Queue[BigInt]()
   val hostRsp = mutable.Queue[BigInt]()
   dut.io.guest.valid #= false
+  dut.io.uart.valid #= false
+  dut.io.ramReady #= true
   dut.io.host.valid #= false
   dut.clockDomain.forkStimulus(10)
   // the link and the memory accept at random moments, so back-pressure is exercised everywhere
@@ -77,6 +79,8 @@ class Bench(dut: CardLink) {
   def hostRead(a: Int): BigInt = access(dut.io.host, false, a, 0)
   def guestWrite(slot: Int, reg: String, v: BigInt): Unit = access(dut.io.guest, true, slot * 0x1000 + V.reg(reg), v)
   def guestRead(slot: Int, reg: String): BigInt = access(dut.io.guest, false, slot * 0x1000 + V.reg(reg), 0)
+  def uartWrite(reg: Int, v: Int): Unit = access(dut.io.uart, true, reg, v)
+  def uartRead(reg: Int): Int = access(dut.io.uart, false, reg, 0).toInt
 
   var log2 = 3
   var nextRecord = 1L

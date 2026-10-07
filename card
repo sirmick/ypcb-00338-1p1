@@ -1,0 +1,94 @@
+#!/bin/bash
+# card: the guest SoC on the YPCB-00338-1P1 (SOC-ROADMAP S5), from buzz. Builds here, runs on dino.
+#
+#   card up [--load] [bitstream]
+#                         make sure the card runs designs/soc-s5 (load it and warm-reboot dino if the card is
+#                         not enumerated as 10ee:0485, or always with --load), bind it to vfio-pci, then boot
+#                         the guest: cardd loads OpenSBI and Linux and serves the console on a socket
+#   card console          attach this terminal to the guest's console (raw; Ctrl-] detaches)
+#   card reset            reboot the guest: hold the cores, reload both images, release
+#   card stop             stop cardd (the guest keeps running, without a console, until the next reset)
+#   card log              cardd's own log (loads, errors)
+#   card status           PCIe device, driver, cardd, and the card's JTAG debug register
+#   card build            rebuild cardd, OpenSBI, the initramfs and the kernel (also done by `up` when missing)
+#
+# Images build into $CARD_BUILD (default ~/fpga/build/s5); they and cardd go to dino:~/fpga/card/.
+set -eo pipefail
+HW=$(cd "$(dirname "$0")" && pwd)
+HOST=${FPGA_HOST:-dino}
+OUT=${CARD_BUILD:-$HOME/fpga/build/s5}
+BDF=${CARD_BDF:-0000:04:00.0}
+ID=10ee:0485
+REMOTE=fpga/card
+SOCK=/run/cardd/console.sock
+
+on_dino() { ssh "$HOST" "$@"; }
+
+build() {
+    (cd "$HW/cardd" && cargo build --release -q)
+    "$HW/linux/build-opensbi.sh" "$OUT" | tail -1
+    "$HW/linux/build-initramfs.sh" "$OUT"
+    "$HW/linux/build-kernel.sh" "$OUT" "$OUT/initramfs" | tail -1
+}
+
+push() {
+    [[ -s $OUT/fw_jump.bin && -s $OUT/Image && -x $HW/cardd/target/release/cardd ]] || build
+    on_dino mkdir -p "$REMOTE"
+    rsync -a "$HW/cardd/target/release/cardd" "$OUT/fw_jump.bin" "$OUT/Image" "$HOST:$REMOTE/"
+}
+
+wait_for_dino() {
+    sleep 5
+    for _ in $(seq 1 60); do ssh -o ConnectTimeout=5 "$HOST" true 2>/dev/null && return; sleep 10; done
+    echo "card: $HOST did not come back" >&2; exit 1
+}
+
+ensure_card() {
+    local force=; [[ ${1:-} == --load ]] && { force=1; shift; }
+    if [[ -n $force ]] || ! on_dino lspci -n -s "${BDF#0000:}" | grep -q "$ID"; then
+        stop
+        local bit=${1:-designs/soc-s5/build/soc_s5.bit}
+        echo "card: loading $bit, then a warm reboot of $HOST so its BIOS enumerates the card"
+        "$HW/fpga" load "$bit" | tail -1
+        on_dino sudo -n systemctl reboot || true
+        wait_for_dino
+        on_dino lspci -n -s "${BDF#0000:}" | grep -q "$ID" || { echo "card: $ID did not enumerate" >&2; exit 1; }
+    fi
+    on_dino "sudo -n modprobe vfio-pci
+             d=/sys/bus/pci/devices/$BDF
+             if [ \"\$(basename \$(readlink \$d/driver 2>/dev/null) 2>/dev/null)\" != vfio-pci ]; then
+                 [ -e \$d/driver ] && echo $BDF | sudo -n tee \$d/driver/unbind >/dev/null
+                 echo vfio-pci | sudo -n tee \$d/driver_override >/dev/null
+                 echo $BDF | sudo -n tee /sys/bus/pci/drivers_probe >/dev/null
+             fi"
+}
+
+stop() { on_dino "sudo -n pkill -x cardd; for i in 1 2 3 4 5; do pgrep -x cardd >/dev/null || break; sleep 0.5; done" || true; }
+
+start() {
+    stop
+    # detached from this ssh session entirely, or ssh waits for it
+    on_dino "cd $REMOTE && setsid -f sh -c 'sudo -n ./cardd boot $BDF fw_jump.bin Image --socket $SOCK > cardd.log 2>&1' < /dev/null > /dev/null 2>&1"
+    for _ in $(seq 1 40); do
+        if on_dino grep -q "releasing the cores" "$REMOTE/cardd.log" 2>/dev/null; then
+            on_dino cat "$REMOTE/cardd.log"; echo "card: booting; attach with: card console"; return
+        fi
+        on_dino pgrep -x cardd >/dev/null || { on_dino cat "$REMOTE/cardd.log"; echo "card: cardd failed" >&2; exit 1; }
+        sleep 0.5
+    done
+    echo "card: cardd did not release the cores in 20 s" >&2; on_dino cat "$REMOTE/cardd.log"; exit 1
+}
+
+cmd=${1:-help}; shift || true
+case $cmd in
+  up)      push; ensure_card "$@"; start ;;
+  reset)   push; start ;;
+  console) exec ssh -t "$HOST" "sudo -n $REMOTE/cardd console $SOCK" ;;
+  stop)    stop; echo "card: cardd stopped" ;;
+  log)     on_dino cat "$REMOTE/cardd.log" ;;
+  status)  on_dino "lspci -nn -s ${BDF#0000:}; echo driver: \$(basename \$(readlink /sys/bus/pci/devices/$BDF/driver 2>/dev/null) 2>/dev/null)
+                    pgrep -ax cardd || echo 'cardd: not running'"
+           "$HW/fpga" check designs/soc-s5 || true ;;
+  build)   build ;;
+  *)       sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

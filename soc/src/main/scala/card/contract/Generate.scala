@@ -7,6 +7,7 @@ import Contract.{Bar0, Map => M, Message, VirtioMmio => V}
 //   ../cardd/src/contract.rs      Rust constants and message layouts for the host backend
 //   ../cardd/tests/generated/transcripts.rs  the shared transcripts, with every message's expected bytes
 //   gen/contract.dtsi             the device-tree fragment for the virtio slots and the DMA pool
+//   gen/contract-console.dtsi     the device-tree fragment for the console (the 16550)
 //   gen/CONTRACT.md               the contract as tables, for people
 // `sbt "runMain card.contract.Generate"` writes them; ContractSpec checks they are up to date.
 object Generate {
@@ -16,6 +17,7 @@ object Generate {
     "../cardd/src/contract.rs" -> rust,
     "../cardd/tests/generated/transcripts.rs" -> transcripts,
     "gen/contract.dtsi" -> dtsi,
+    "gen/contract-console.dtsi" -> consoleDtsi,
     "gen/CONTRACT.md" -> markdown
   )
 
@@ -115,6 +117,9 @@ object Generate {
        |
        |/// The DMA windows (base, size) a guest range in a copy or a used ring must lie wholly inside.
        |pub const DMA_WINDOWS: &[(u64, u64)] = &[${Contract.dmaWindows.map { case (b, sz) => s"(${hex(b)}, ${hex(sz)})" }.mkString(", ")}];
+       |
+       |/// Main memory (base, size): copies may reach it only while GUEST_RESET holds the guest's cores.
+       |pub const BOOT_WINDOW: (u64, u64) = (${hex(Contract.bootWindow._1)}, ${hex(Contract.bootWindow._2)});
        |
        |/// Records and commands: 64 bytes, little-endian, sequence number at both ends.
        |pub mod message {
@@ -245,6 +250,26 @@ object Generate {
        |};
        |""".stripMargin
   }
+
+  def consoleDtsi: String =
+    s"""/* $header */
+       |/* The card's console: a 16550 whose wire is the host link (CONSOLE_TX and CONSOLE_RX). The including
+       | * tree provides the PLIC with the label `plic`, and the clock: &card_uart { clock-frequency = <...>; }; */
+       |/ {
+       |\tsoc {
+       |\t\t#address-cells = <2>;
+       |\t\t#size-cells = <2>;
+       |\t\tcard_uart: serial@${M.Uart.toHexString} {
+       |\t\t\tcompatible = "ns16550a";
+       |\t\t\treg = <0x0 ${hex(M.Uart)} 0x0 ${hex(M.UartSize)}>;
+       |\t\t\treg-shift = <${M.UartRegShift}>;
+       |\t\t\treg-io-width = <4>;
+       |\t\t\tinterrupts = <${M.UartIrq}>;
+       |\t\t\tinterrupt-parent = <&plic>;
+       |\t\t};
+       |\t};
+       |};
+       |""".stripMargin
 
   def markdown: String = {
     def regTable(rs: Seq[Reg]) = "| Offset | Name | Access | |\n|---|---|---|---|\n" +

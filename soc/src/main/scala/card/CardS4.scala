@@ -49,6 +49,11 @@ case class CardS4() extends Component {
   link.io.guest.write := False
   link.io.guest.address := 0
   link.io.guest.wdata := 0
+  link.io.ramReady := True // block RAM
+  link.io.uart.valid := False
+  link.io.uart.write := False
+  link.io.uart.address := 0
+  link.io.uart.wdata := 0
   mem.io.cmd << link.io.mem
   link.io.memRsp << mem.io.rsp
   io.irq := link.io.irq

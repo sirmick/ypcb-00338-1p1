@@ -1,0 +1,79 @@
+// The guest SoC of SOC-ROADMAP S5: one VexiiRiscv core (RV64IMAFDC, Sv39) at 50 MHz, QEMU virt's map,
+// DDR3 channel A as main memory, and the console of ../soc/gen/contract-console.dtsi. OpenSBI embeds
+// this tree (build-opensbi.sh) and hands it to Linux.
+/dts-v1/;
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "redoubt,ypcb-00338-1p1-s5";
+	model = "YPCB-00338-1P1 guest SoC (S5)";
+
+	chosen {
+		bootargs = "console=ttyS0 earlycon=sbi rdinit=/init";
+		stdout-path = "serial0";
+	};
+
+	aliases {
+		serial0 = &card_uart;
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <50000000>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			reg = <0>;
+			status = "okay";
+			compatible = "riscv";
+			riscv,isa = "rv64imafdc_zicntr_zicsr_zifencei_zihpm";
+			riscv,isa-base = "rv64i";
+			riscv,isa-extensions = "i", "m", "a", "f", "d", "c", "zicntr", "zicsr", "zifencei", "zihpm";
+			mmu-type = "riscv,sv39";
+			clock-frequency = <50000000>;
+
+			cpu0_intc: interrupt-controller {
+				#interrupt-cells = <1>;
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+			};
+		};
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x80000000>;
+	};
+
+	soc {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		compatible = "simple-bus";
+		ranges;
+
+		clint@2000000 {
+			compatible = "sifive,clint0", "riscv,clint0";
+			reg = <0x0 0x2000000 0x0 0x10000>;
+			interrupts-extended = <&cpu0_intc 3>, <&cpu0_intc 7>;
+		};
+
+		plic: interrupt-controller@c000000 {
+			compatible = "sifive,plic-1.0.0", "riscv,plic0";
+			reg = <0x0 0xc000000 0x0 0x600000>;
+			#address-cells = <0>;
+			#interrupt-cells = <1>;
+			interrupt-controller;
+			interrupts-extended = <&cpu0_intc 11>, <&cpu0_intc 9>;
+			riscv,ndev = <31>;
+		};
+	};
+};
+
+#include "../soc/gen/contract-console.dtsi"
+
+&card_uart {
+	clock-frequency = <50000000>;
+	current-speed = <115200>;
+};

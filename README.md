@@ -23,6 +23,7 @@ There is no public schematic; the pin map comes from
 | Timing: silicon runs to 400 MHz where nextpnr says 235 | ✅ | [designs/timing](designs/timing/) |
 | PCIe Gen2 x1 endpoint | ✅ | [designs/pcie-x1](designs/pcie-x1/) (regymm/pcie_7x) |
 | **DDR3: both channels, 9 lanes each, ECC lanes included** | ✅ DDR3-667 | [designs/uberddr3](designs/uberddr3/): 2 GiB per channel written and read back with 0 errors at 5.04 GB/s each, also after a cold start |
+| **Linux on the card**: a 64-bit RISC-V core with FPU, DDR3 main memory, console over PCIe | ✅ | [designs/soc-s5](designs/soc-s5/): VexiiRiscv RV64IMAFDC boots OpenSBI and stock Linux 6.12 to a bash shell; `card up`, then `card console` ([SOC-ROADMAP.md](SOC-ROADMAP.md)) |
 
 The full story, gate by gate, is in [ROADMAP.md](ROADMAP.md); what happened when, wrong turns
 included, is in [the log](board/ypcb-00338-1p1/LOG.md). Bugs found in the open tools, with evidence
@@ -69,6 +70,10 @@ fpga jprogram | fuses | flash-readback <out>     (fuses and flash are read-only)
 fpga help
 ```
 
+[`card`](card) runs the guest SoC (SOC-ROADMAP S5): `card up` loads designs/soc-s5 if needed and boots
+OpenSBI and Linux, `card console` attaches your terminal to the guest's console (Ctrl-] detaches),
+`card reset` reboots the guest.
+
 [`bmc`](bmc) drives the card host's BMC over the LAN (power state, power on, a power cycle), the way
 back in when that host is hung or off.
 
@@ -76,7 +81,7 @@ back in when that host is hung or off.
 
 ```text
 .
-├── fpga, bmc                  the commands above
+├── fpga, card, bmc            the commands above
 ├── GETTING-STARTED.md, ROADMAP.md, UPSTREAM.md
 ├── board/ypcb-00338-1p1/      card page, log, board.fasm, pin files, openocd.cfg, scripts/
 ├── designs/                   test designs, each with a check.py
@@ -84,6 +89,7 @@ back in when that host is hung or off.
 ├── upstream/                  our nextpnr patches (applied by tools/build-nextpnr.sh)
 ├── soc/                       the card SoC in SpinalHDL, with SpinalSim tests (SOC-ROADMAP.md)
 ├── cardd/                     the host backend in Rust (SOC-ROADMAP.md)
+├── linux/                     the guest's software: device tree, OpenSBI, kernel, initramfs scripts
 ├── hosts/                     our lab setup, as an example
 ├── datasheets/                index (PDFs via fetch-docs.sh)
 └── references/                index of other people's work; third-party/ copies (ignored)

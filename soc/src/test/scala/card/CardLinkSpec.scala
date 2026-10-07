@@ -44,7 +44,7 @@ class CardLinkSpec extends AnyFunSuite {
       for (a <- unused) b.hostWrite(a, BigInt("ffffffff", 16))
       for (a <- unused) assert(b.hostRead(a) == 0, f"offset 0x$a%x")
       assert(b.hostRead(Bar0.reg("MAGIC")) == Contract.Magic)
-      assert(b.hostRead(Bar0.reg("STATUS")) == 0)
+      assert(b.hostRead(Bar0.reg("STATUS")) == 8, "STATUS before set-up: only main memory ready")
       for (s <- 0 until 8) assert(b.guestRead(s, "DeviceID") == 0, s"slot $s was programmed")
     }
   }
@@ -105,6 +105,7 @@ class CardLinkSpec extends AnyFunSuite {
     compiled.doSim { dut =>
       val b = new Bench(dut)
       b.setUp(4)
+      b.hostWrite(Bar0.reg("GUEST_RESET"), 0) // the guest runs: main memory is outside every window
       val cases = Seq[(BigInt, Long, Long, Int, String)](
         (BigInt(Contract.Map.Ram), 64, 0, Contract.CopyStatus.OutsideWindow, "main memory"),
         (D + Contract.Map.DmaRegionSize - 16, 32, 0x30, Contract.CopyStatus.OutsideWindow, "across the window's end"),

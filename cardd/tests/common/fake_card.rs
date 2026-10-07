@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use cardd::bar::Bar;
+use cardd::backend::inside_boot_window;
 use cardd::contract::{bar0, command, copy_status, record, Layout, MAGIC, VERSION};
 use cardd::link::HostMem;
 use cardd::mem::inside_windows;
@@ -34,6 +35,8 @@ pub struct State {
     pub queues: [[QueueInfo; 2]; 8],
     pub refused: bool,
     pub commands: Vec<String>,
+    /// bytes CONSOLE_RX delivered to the 16550
+    pub console_rx: Vec<u8>,
 }
 
 impl State {
@@ -44,6 +47,8 @@ impl State {
         (0..n).map(|i| *self.guest.get(&(a + i as u64)).unwrap_or(&0)).collect()
     }
     fn reg(&self, r: usize) -> u32 { *self.regs.get(&r).unwrap_or(&0) }
+    /// GUEST_RESET: held (1) until the host writes 0
+    pub fn guest_reset(&self) -> bool { self.regs.get(&bar0::reg::GUEST_RESET).is_none_or(|&v| v & 1 == 1) }
     fn entries(&self) -> usize { 1 << self.reg(bar0::reg::INBOX_ENTRIES_LOG2) }
 
     /// Writes a record into the host inbox, numbered as the card numbers them.
@@ -90,7 +95,7 @@ impl State {
                         copy_status::BAD_LENGTH
                     } else if st % 64 != (guest % 64) as usize {
                         copy_status::MISALIGNED
-                    } else if !inside_windows(guest, len) {
+                    } else if !inside_windows(guest, len) && !(self.guest_reset() && inside_boot_window(guest, len)) {
                         copy_status::OUTSIDE_WINDOW
                     } else {
                         if self.staging.len() < st + len { self.staging.resize(st + len, 0); }
@@ -123,6 +128,11 @@ impl State {
                         self.refused = true;
                     }
                 }
+                k if k == command::CONSOLE_RX.kind => {
+                    let n = (f(&command::CONSOLE_RX, "count") as usize).min(48);
+                    let data = message::field(&command::CONSOLE_RX, &b, "data").unwrap();
+                    self.console_rx.extend_from_slice(&data[..n]);
+                }
                 _ => self.refused = true,
             }
             self.ack(n);
@@ -137,7 +147,14 @@ impl State {
 pub struct FakeBar(pub Rc<RefCell<State>>);
 impl Bar for FakeBar {
     fn read32(&mut self, offset: usize) -> u32 {
-        match offset { bar0::reg::MAGIC => MAGIC, bar0::reg::VERSION => VERSION, _ => 0 }
+        let s = self.0.borrow();
+        match offset {
+            bar0::reg::MAGIC => MAGIC,
+            bar0::reg::VERSION => VERSION,
+            bar0::reg::GUEST_RESET => s.guest_reset() as u32,
+            bar0::reg::STATUS => 8 | (s.refused as u32) << 2 | (s.reg(bar0::reg::ENABLE) & 1), // main memory ready
+            _ => 0,
+        }
     }
     fn write32(&mut self, offset: usize, value: u32) {
         let mut s = self.0.borrow_mut();

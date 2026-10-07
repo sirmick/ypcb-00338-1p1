@@ -1,5 +1,5 @@
 <!-- Generated from soc/src/main/scala/card/contract/Contract.scala by Generate.scala. Do not edit. -->
-# The host-link contract, version 1
+# The host-link contract, version 2
 
 Everything the card's RTL and the host backend (`cardd`) agree on. Source:
 [Contract.scala](../src/main/scala/card/contract/Contract.scala).
@@ -61,7 +61,7 @@ a copy command finished.
 
 ### CONSOLE_TX (kind 6)
 
-bytes the guest sent to the 16550.
+bytes the guest sent to the 16550 (dropped while the card is not enabled).
 
 | Offset | Field | Bytes | |
 |---|---|---|---|
@@ -120,7 +120,7 @@ set InterruptStatus bits (1 used buffer, 2 configuration change).
 
 ### CONSOLE_RX (kind 5)
 
-bytes for the 16550's receive FIFO.
+bytes for the 16550's receive FIFO (count 0-48; bytes that do not fit set the overrun bit).
 
 | Offset | Field | Bytes | |
 |---|---|---|---|
@@ -144,7 +144,8 @@ bytes for the 16550's receive FIFO.
 | `0x28` | `STAGING_SIZE` | W | host staging size in bytes |
 | `0x30` | `CMD_PRODUCED` | W | doorbell: sequence number of the last command written |
 | `0x34` | `ENABLE` | W | 1 once the registers above are set; 0 stops the card's writes; 0 then 1 starts a new session (both sequences from 1) |
-| `0x38` | `STATUS` | R | bit 0 enabled, bit 1 inbox full, bit 2 a command was refused |
+| `0x38` | `STATUS` | R | bit 0 enabled, bit 1 inbox full, bit 2 a command was refused, bit 3 main memory ready (calibrated and tested) |
+| `0x3c` | `GUEST_RESET` | RW | bit 0: 1 holds the guest's cores in reset (the power-up state); while it is 1, copies may also reach main memory (the boot window) |
 
 The command ring is at `0x1000`: 64 entries of 64 bytes.
 Slot programming registers are at `0x4000 + slot * 0x100`:

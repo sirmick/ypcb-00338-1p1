@@ -2,9 +2,10 @@
 //! copy commands ([`CopyMem`]), and serves each slot's device when the guest notifies it.
 
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use crate::bar::Bar;
-use crate::contract::{command, copy_status, record, virtio_mmio};
+use crate::contract::{bar0, command, copy_status, record, virtio_mmio, BOOT_WINDOW};
 use crate::dev::blk::{self, Disk};
 use crate::link::{self, Commands, HostMem, Inbox, LinkError};
 use crate::mem::{self, GuestMem, MemError};
@@ -12,8 +13,9 @@ use crate::message::{self, Header, SIZE};
 use crate::queue::{QueueError, SplitQueue};
 use crate::slot::{Event, Slot};
 
-/// How many times a wait polls the inbox before giving up.
-pub const MAX_POLLS: usize = 1_000_000;
+/// How long a wait for the card (a copy's COPY_DONE, room in the command ring) lasts before giving up.
+/// A time, not a count of polls: how fast the inbox is polled depends on the host.
+pub const WAIT: Duration = Duration::from_secs(2);
 const LINE: u64 = 64;
 
 pub struct Link {
@@ -55,7 +57,8 @@ impl Link {
 
     /// Sends a command, waiting for ring space if the card is behind.
     pub fn send(&mut self, layout: &crate::contract::Layout, slot: u16, values: &[(&str, &[u8])]) -> Result<u32, LinkError> {
-        for _ in 0..MAX_POLLS {
+        let deadline = Instant::now() + WAIT;
+        while Instant::now() < deadline {
             match self.commands.send(self.bar.as_mut(), layout, slot, values) {
                 Err(LinkError::RingFull) => {
                     if let Some(r) = self.poll()? {
@@ -70,7 +73,8 @@ impl Link {
 
     /// Waits for the COPY_DONE carrying `tag`; other records wait in the queue.
     fn wait_copy(&mut self, tag: u32) -> Result<u16, MemError> {
-        for _ in 0..MAX_POLLS {
+        let deadline = Instant::now() + WAIT;
+        while Instant::now() < deadline {
             match self.poll() {
                 Ok(Some((h, b))) if h.kind == record::COPY_DONE.kind => {
                     let t = message::field_u64(&record::COPY_DONE, &b, "tag").map_err(|e| MemError::Link(format!("{e:?}")))?;
@@ -103,6 +107,86 @@ impl Link {
             s => Err(MemError::Copy(s)),
         }
     }
+}
+
+impl Link {
+    /// Holds the guest's cores in reset (`true`, the power-up state) or lets them run. While they are
+    /// held, the boot window is open: copies may reach main memory.
+    pub fn set_guest_reset(&mut self, hold: bool) {
+        self.bar.write32(bar0::reg::GUEST_RESET, hold as u32);
+    }
+    pub fn guest_reset(&mut self) -> bool {
+        self.bar.read32(bar0::reg::GUEST_RESET) & 1 == 1
+    }
+    /// Main memory is calibrated and tested (STATUS bit 3).
+    pub fn ram_ready(&mut self) -> bool {
+        self.bar.read32(bar0::reg::STATUS) & 8 == 8
+    }
+    /// Sends bytes to the guest's 16550, 48 to a CONSOLE_RX command.
+    pub fn console_rx(&mut self, bytes: &[u8]) -> Result<(), LinkError> {
+        for chunk in bytes.chunks(48) {
+            let mut data = [0u8; 48];
+            data[..chunk.len()].copy_from_slice(chunk);
+            self.send(&command::CONSOLE_RX, 0, &[("count", &[chunk.len() as u8]), ("data", &data)])?;
+        }
+        Ok(())
+    }
+}
+
+/// The bytes a CONSOLE_TX record carries; `None` for any other record.
+pub fn console_tx(h: &Header, b: &[u8; SIZE]) -> Option<Vec<u8>> {
+    if h.kind != record::CONSOLE_TX.kind {
+        return None;
+    }
+    let n = message::field_u64(&record::CONSOLE_TX, b, "count").ok()? as usize;
+    let data = message::field(&record::CONSOLE_TX, b, "data").ok()?;
+    Some(data[..n.min(data.len())].to_vec())
+}
+
+/// True if `[guest, guest + len)` lies wholly inside main memory (the boot window).
+pub fn inside_boot_window(guest: u64, len: usize) -> bool {
+    let (base, size) = BOOT_WINDOW;
+    guest.checked_add(len as u64).is_some_and(|end| guest >= base && end <= base + size)
+}
+
+/// Main memory through the boot window: how firmware, kernel and initramfs get there. The card refuses
+/// these copies once the guest runs; this side refuses ranges outside main memory.
+pub struct BootMem<'a>(pub &'a mut Link);
+
+impl<'a> GuestMem for BootMem<'a> {
+    fn read(&mut self, guest: u64, buf: &mut [u8]) -> Result<(), MemError> {
+        if !inside_boot_window(guest, buf.len()) {
+            return Err(MemError::OutsideWindow { guest, len: buf.len() });
+        }
+        copy_range(self.0, true, guest, buf)
+    }
+    fn write(&mut self, guest: u64, data: &[u8]) -> Result<(), MemError> {
+        if !inside_boot_window(guest, data.len()) {
+            return Err(MemError::OutsideWindow { guest, len: data.len() });
+        }
+        let mut d = data.to_vec();
+        copy_range(self.0, false, guest, &mut d)
+    }
+}
+
+/// Copies a guest range through staging in chunks that fit it, keeping each chunk's place in its line.
+fn copy_range(link: &mut Link, to_host: bool, guest: u64, buf: &mut [u8]) -> Result<(), MemError> {
+    let room = link.staging_size - LINE as usize;
+    let mut done = 0;
+    while done < buf.len() {
+        let g = guest + done as u64;
+        let n = (buf.len() - done).min(room);
+        let st = (g % LINE) as usize;
+        if to_host {
+            link.copy(true, g, n, st)?;
+            link.staging.read(st, &mut buf[done..done + n]);
+        } else {
+            link.staging.write(st, &buf[done..done + n]);
+            link.copy(false, g, n, st)?;
+        }
+        done += n;
+    }
+    Ok(())
 }
 
 /// Phase 1's guest memory: each access is a copy through host staging. The staging offset keeps the

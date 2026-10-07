@@ -63,7 +63,7 @@ linux/                     (S5) OpenSBI, kernel config, device trees, Debian roo
 | S2 | virtio-mmio shim and the mailbox, tested both sides | ✅ done | [Link.scala](soc/src/main/scala/card/Link.scala): 8 virtio-mmio v2 shims and the BAR0 mailbox (registers, command ring, inbox writer with flow control). SpinalSim replays `blk_init` against it (every record's bytes and inbox address checked), plus BAR0 isolation, refused commands and inbox flow control; deliberate bugs fail the tests. cardd replays the same transcript from the host side (slot programming, inbox, command ring), with attack cases. 18 RTL tests, 10 Rust tests |
 | S3 | Phase-1 copy engine; hostile cases; co-simulation | ✅ done | The command processor executes COPY_TO_HOST, COPY_FROM_HOST and USED_PUSH as state machines with window checks; the `blk_read` transcript (a whole virtio-blk read served by copies) passes in SpinalSim with random back-pressure; hostile copies and pushes are refused. cardd gained its phase-1 backend (split-queue walker, virtio-blk, copies through staging) and serves the same read against a Rust model of the card. **Co-simulation:** cardd's real backend drives the RTL through a pipe and serves the read (322 requests, 628 cycles). 24 RTL tests, 16 Rust tests |
 | S4 | On the card: link latency and card-initiated DMA | ✅ done | [designs/soc-s4](designs/soc-s4/): [PcieLink](soc/src/main/scala/card/PcieLink.scala) on the PCIe hard block (Gen1 x1), 64 KiB of block RAM as guest memory. cardd opens the card through VFIO ([vfio.rs](cardd/src/vfio.rs), its only `unsafe` code), pins its inbox below 4 GiB and staging above, and [examples/s4.rs](cardd/examples/s4.rs) passes on dino: a 64 KiB round trip and 2,000 random copies (1–3,000 bytes, any alignment) agree with a model, both DMA windows reach the RAM, no IOMMU faults. BAR0 read 1.6 µs; a 4-byte copy's round trip 7.9 µs to host, 9.9 µs from host; 64 KiB copies 163 MB/s to host, 30 MB/s from host (one 64-byte read outstanding). MSI and DDR3 move to S5/S6 |
-| S5 | One core boots Linux | ⬜ | |
+| S5 | One core boots Linux | ✅ done | [designs/soc-s5](designs/soc-s5/): VexiiRiscv's cluster (RV64IMAFDC, Sv39, one hart, 50 MHz) with DDR3 channel A (2 GiB, UberDDR3), QEMU virt's CLINT and PLIC, and a 16550 whose wire is the host link. cardd loads OpenSBI and stock Linux 6.12 through the boot window and the guest boots to a bash shell in 14 s; `card up` / `card console`. memtest passes over 1.5 GiB from Linux. In simulation the whole SoC boots OpenSBI to its payload (12.8 M cycles). 38 RTL tests, 19 Rust tests |
 | S6 | virtio-blk and virtio-net through `cardd`; Debian | ⬜ | |
 | S7 | Four cores: SMP Debian | ⬜ | |
 | S8 | The forwarder and confined DMA windows | ⬜ | |
@@ -158,6 +158,30 @@ warm-reboot so the BIOS enumerates the card.
 **Proof:** one VexiiRiscv RV64GC (Sv39, FPU) on a TileLink SoC with DDR3 channel A, CLINT, PLIC and
 the 16550; OpenSBI, a stock kernel and an initramfs boot to a shell, the console reaching the host
 through `cardd`'s socket. A memory test from Linux over channel A passes.
+
+**Done (2026-10-06).** Three steps:
+- **S5a, the contract (v2):** GUEST_RESET in BAR0 holds the cores at power-up; while it does, copies may
+  reach main memory (the boot window), which is how firmware and kernel get there. STATUS bit 3 says main
+  memory is calibrated and tested. The 16550 ([Console.scala](soc/src/main/scala/card/Console.scala))
+  sends what the guest writes as CONSOLE_TX records and takes CONSOLE_RX's bytes, with the interrupts
+  Linux's 8250 driver uses; its registers are 4 bytes apart (QEMU's are byte-wide), so the bridge stays
+  trivial. Tested in SpinalSim ([ConsoleSpec](soc/src/test/scala/card/ConsoleSpec.scala)) and in cardd.
+- **S5b, the SoC in Verilator:** [SocCore.scala](soc/src/main/scala/card/SocCore.scala) wraps VexiiRiscv's
+  LiteX cluster ([soc/vexii-cluster.sh](soc/vexii-cluster.sh); TileLink inside, AXI4 for memory and
+  AXI-lite for devices at its edges) with an AXI4-to-lines bridge, a device bridge and PcieLink. With
+  the real cluster RTL and a TLP-level host, OpenSBI prints its banner and platform report through
+  CONSOLE_TX records and reaches its payload; a GUEST_RESET in the middle of a boot leaves it bootable.
+- **S5c, on the card:** [CardS5](soc/src/main/scala/card/CardS5.scala) adds the clock crossings (PCIe
+  62.5 MHz, SoC 50 MHz from the DDR3 PLL's spare output, DDR3 controller 83.3 MHz) and a Wishbone master
+  for UberDDR3. Place and route 42 min; SoC 63.8 MHz, controller 115.7 MHz. DDR3 calibrated and passed
+  its self-test on the first load.
+
+**Measured:** loading at 26 MB/s (the copy path, one 64-byte read outstanding); main memory from Linux
+68 MB/s for line reads, 56 MB/s writes, 52 MB/s copies (`membench`): one request in flight at every
+stage of the line path. Pipelining it (several requests in flight, in order) and the core's prefetch
+options are the next performance step; an L2 comes with S7's four cores.
+
+**Run it:** `card up`, then `card console` ([linux/README.md](linux/README.md) for the images).
 
 ## S6: virtio and Debian
 
