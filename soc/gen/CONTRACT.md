@@ -57,7 +57,7 @@ a copy command finished.
 | Offset | Field | Bytes | |
 |---|---|---|---|
 | 8 | `tag` | 4 |  |
-| 12 | `status` | 2 | 0 done; 1 refused: outside the window; 2 refused: bad length |
+| 12 | `status` | 2 | 0 done; 1 outside the DMA windows; 2 bad length or outside staging; 3 misaligned |
 
 ### CONSOLE_TX (kind 6)
 
@@ -102,7 +102,7 @@ copy from host staging into a guest range (checked against the window).
 
 ### USED_PUSH (kind 3)
 
-append an entry to a queue's used ring, then publish the used index (release).
+append {id, len} to a ready queue's used ring, then publish the new used index; refused if the ring lies outside the windows.
 
 | Offset | Field | Bytes | |
 |---|---|---|---|

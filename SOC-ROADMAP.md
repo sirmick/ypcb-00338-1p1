@@ -61,7 +61,7 @@ linux/                     (S5) OpenSBI, kernel config, device trees, Debian roo
 | S0 | Toolchain, and the core's cost under openXC7 | ✅ done | VexiiRiscv's MicroSoc with LiteX's "debian" core options (RV64IMAFDC, Sv39, 4-way L1s, BTB/RAS/GShare): 16.5k LUTs, 8.5k FFs, 54 BRAM, 16 DSP, place and route 2 min, nextpnr Fmax 118.7 MHz (RV64IMAC: 10.9k LUTs, 124.5 MHz). A self-test of integer, M, A and double-precision FPU instructions passes on the card at 50 MHz ([designs/vexii-s0](designs/vexii-s0/)) |
 | S1 | The contract and its generators | ✅ done | [Contract.scala](soc/src/main/scala/card/contract/Contract.scala) generates Rust ([cardd/src/contract.rs](cardd/src/contract.rs)), a device-tree fragment, [a readable table](soc/gen/CONTRACT.md) and shared transcripts; the RTL's message encoder (SpinalSim, 12 kinds) and cardd (5 tests) produce identical bytes; editing the source makes the freshness test fail until all four outputs are regenerated |
 | S2 | virtio-mmio shim and the mailbox, tested both sides | ✅ done | [Link.scala](soc/src/main/scala/card/Link.scala): 8 virtio-mmio v2 shims and the BAR0 mailbox (registers, command ring, inbox writer with flow control). SpinalSim replays `blk_init` against it (every record's bytes and inbox address checked), plus BAR0 isolation, refused commands and inbox flow control; deliberate bugs fail the tests. cardd replays the same transcript from the host side (slot programming, inbox, command ring), with attack cases. 18 RTL tests, 10 Rust tests |
-| S3 | Phase-1 copy engine; hostile cases; co-simulation | ⬜ | |
+| S3 | Phase-1 copy engine; hostile cases; co-simulation | ✅ done | The command processor executes COPY_TO_HOST, COPY_FROM_HOST and USED_PUSH as state machines with window checks; the `blk_read` transcript (a whole virtio-blk read served by copies) passes in SpinalSim with random back-pressure; hostile copies and pushes are refused. cardd gained its phase-1 backend (split-queue walker, virtio-blk, copies through staging) and serves the same read against a Rust model of the card. **Co-simulation:** cardd's real backend drives the RTL through a pipe and serves the read (322 requests, 628 cycles). 24 RTL tests, 16 Rust tests |
 | S4 | On the card: link latency and card-initiated DMA | ⬜ | |
 | S5 | One core boots Linux | ⬜ | |
 | S6 | virtio-blk and virtio-net through `cardd`; Debian | ⬜ | |
@@ -114,6 +114,13 @@ after the window check; (configuration D) looping chains, out-of-window descript
 chains, `INDIRECT`, torn and stale records are refused; `cardd`'s fuzz targets run clean; and
 `cardd` itself runs end to end against a Verilator model of the card RTL (co-simulation), serving
 a virtio-blk read to a simulated guest.
+
+**Done 2026-10-06.** Copies move 64-byte lines with byte masks, so the host keeps a copy's staging offset
+at the guest address's place in its line. A used-ring entry is 4-byte aligned and may straddle a line
+(two writes); the card requires the used ring to be 8-byte aligned (Linux aligns it to a cache line).
+Fuzzing is randomised tests in `cargo test` (100,000 random rings and requests, 100,000 random
+messages), not a coverage-guided fuzzer yet. Run the co-simulation with `cd soc && sbt "testOnly
+card.CosimSpec"` (it builds `cardd/examples/cosim.rs`).
 
 ## S4: on the card
 

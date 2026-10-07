@@ -66,6 +66,13 @@ pub fn program_slot(bar: &mut dyn Bar, slot: usize, d: &Device) {
     }
 }
 
+/// Host memory the card writes into (the inbox) or the host and card share (staging): pinned and
+/// mapped for the card's DMA in cardd; a fake card's memory in tests.
+pub trait HostMem {
+    fn read(&mut self, offset: usize, buf: &mut [u8]);
+    fn write(&mut self, offset: usize, data: &[u8]);
+}
+
 /// The host inbox: a ring of 64-byte records in host memory, written only by the card.
 pub struct Inbox {
     log2: u32,
@@ -85,8 +92,9 @@ impl Inbox {
     }
     /// The next record, if the card has finished writing it. An empty, torn or older entry means
     /// "not yet"; a record further ahead is an error. A record taken is acknowledged to the card.
-    pub fn poll(&mut self, mem: &[[u8; SIZE]], bar: &mut dyn Bar) -> Result<Option<(Header, [u8; SIZE])>, LinkError> {
-        let b = mem[self.slot_of(self.next)];
+    pub fn poll(&mut self, mem: &mut dyn HostMem, bar: &mut dyn Bar) -> Result<Option<(Header, [u8; SIZE])>, LinkError> {
+        let mut b = [0u8; SIZE];
+        mem.read(self.slot_of(self.next) * SIZE, &mut b);
         let h = match message::decode(&b) {
             Ok(h) => h,
             Err(Error::Empty) | Err(Error::Torn { .. }) => return Ok(None),

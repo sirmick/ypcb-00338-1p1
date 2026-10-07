@@ -4,97 +4,36 @@ import scala.collection.mutable
 import org.scalatest.funsuite.AnyFunSuite
 import spinal.core._
 import spinal.core.sim._
-import spinal.lib.sim.StreamMonitor
 import card.contract._
 import Contract.{Bar0, Message, VirtioMmio => V}
+import BenchConfig._
 
-// S2: the virtio-mmio shims and the BAR0 mailbox, driven by the shared transcripts (configuration A).
+// S2 and S3: the virtio-mmio shims, the BAR0 mailbox and the command processor (copies, used-ring
+// pushes), driven by the shared transcripts and by hostile commands.
 class CardLinkSpec extends AnyFunSuite {
   lazy val compiled = SimConfig.withConfig(SpinalConfig(targetDirectory = "tmp")).compile(CardLink(8))
-  val InboxBase = BigInt("40000000", 16)
 
-  class Bench(dut: CardLink) {
-    val written = mutable.Queue[(BigInt, BigInt)]()
-    dut.io.guest.valid #= false
-    dut.io.host.valid #= false
-    dut.io.hostWrite.ready #= true
-    dut.clockDomain.forkStimulus(10)
-    StreamMonitor(dut.io.hostWrite, dut.clockDomain) { p => written.enqueue((p.address.toBigInt, p.data.toBigInt)) }
-    dut.clockDomain.waitSampling(5)
-
-    private def access(b: RegBus, write: Boolean, address: BigInt, data: BigInt): BigInt = {
-      b.valid #= true; b.write #= write; b.address #= address; b.wdata #= data
-      var result: Option[BigInt] = None
-      var cycles = 0
-      while (result.isEmpty) {
-        sleep(1) // let the combinational ready and rdata settle
-        if (b.ready.toBoolean) result = Some(b.rdata.toBigInt)
-        dut.clockDomain.waitSampling()
-        cycles += 1
-        assert(cycles < 1000, s"bus stuck at 0x${address.toString(16)}")
-      }
-      b.valid #= false
-      result.get
-    }
-    def hostWrite(a: Int, v: BigInt): Unit = access(dut.io.host, true, a, v)
-    def hostRead(a: Int): BigInt = access(dut.io.host, false, a, 0)
-    def guestWrite(slot: Int, reg: String, v: BigInt): Unit = access(dut.io.guest, true, slot * 0x1000 + V.reg(reg), v)
-    def guestRead(slot: Int, reg: String): BigInt = access(dut.io.guest, false, slot * 0x1000 + V.reg(reg), 0)
-
-    def setUp(log2: Int): Unit = {
-      assert(hostRead(Bar0.reg("MAGIC")) == Contract.Magic)
-      assert(hostRead(Bar0.reg("VERSION")) == Contract.Version)
-      assert(hostRead(Bar0.reg("SLOTS")) == 8)
-      assert(hostRead(Bar0.reg("CMD_ENTRIES_LOG2")) == Bar0.CmdEntriesLog2)
-      hostWrite(Bar0.reg("INBOX_ADDR_LO"), InboxBase & 0xffffffffL)
-      hostWrite(Bar0.reg("INBOX_ADDR_HI"), InboxBase >> 32)
-      hostWrite(Bar0.reg("INBOX_ENTRIES_LOG2"), log2)
-      hostWrite(Bar0.reg("ENABLE"), 1)
-      assert((hostRead(Bar0.reg("STATUS")) & 1) == 1)
-    }
-    def nextRecord(maxCycles: Int = 2000): (BigInt, BigInt) = {
-      var c = 0
-      while (written.isEmpty) { dut.clockDomain.waitSampling(); c += 1; assert(c < maxCycles, "no record arrived") }
-      written.dequeue()
-    }
-    def sendCommand(seq: Long, bytes: Array[Byte]): Unit = {
-      val base = Bar0.CmdRing + ((seq - 1) % (1 << Bar0.CmdEntriesLog2)).toInt * Message.Size
-      for (i <- 0 until Message.Size / 4) hostWrite(base + 4 * i, BigInt(1, bytes.slice(4 * i, 4 * i + 4).reverse))
-      hostWrite(Bar0.reg("CMD_PRODUCED"), seq)
-    }
-    def irqSettles(slot: Int, level: Boolean): Unit = {
-      var c = 0
-      while (((dut.io.irq.toBigInt >> slot) & 1) == 1 != level) { dut.clockDomain.waitSampling(); c += 1; assert(c < 200, s"irq $slot never became $level") }
-    }
-  }
-
-  private def le(b: Array[Byte]) = BigInt(1, b.reverse)
   private val replayable = Transcripts.all.filter(_.steps.exists { case _: GuestWrite | _: GuestRead => true; case _ => false })
 
   for (t <- replayable) test(s"transcript ${t.name}: ${t.doc}") {
     compiled.doSim { dut =>
       val b = new Bench(dut)
-      val log2 = 3 // 8 entries: the transcript wraps the inbox, so the host must keep up
-      b.setUp(log2)
-      var rec = 0L; var cmd = 0L
+      b.setUp(3) // 8 entries: the transcripts wrap the inbox, so the host must keep up
       for (step <- t.steps) step match {
         case HostProgram(slot, reg, v) => b.hostWrite(Bar0.SlotProgBase + slot * Bar0.SlotProgStride + Bar0.slotReg(reg), v)
         case GuestWrite(slot, reg, v) => b.guestWrite(slot, reg, v)
         case GuestRead(slot, reg, v) => assert(b.guestRead(slot, reg) == v, s"$reg on slot $slot")
-        case ExpectRecord(n, slot, values) =>
-          rec += 1
-          val (addr, data) = b.nextRecord()
-          assert(data == le(Contract.encode(Contract.record(n), rec, slot, values)), s"record $rec ($n)")
-          assert(addr == InboxBase + ((rec - 1) % (1 << log2)) * Message.Size, s"record $rec landed at 0x${addr.toString(16)}")
-          b.hostWrite(Bar0.reg("INBOX_CONSUMED"), rec)
-        case HostCommand(n, slot, values) =>
-          cmd += 1
-          b.sendCommand(cmd, Contract.encode(Contract.command(n), cmd, slot, values))
+        case ExpectRecord(n, slot, values) => b.expectRecord(n, slot, values)
+        case HostCommand(n, slot, values) => b.command(n, slot, values)
         case ExpectIrq(slot, level) => b.irqSettles(slot, level)
+        case GuestMem(a, bytes) => b.guest.write(a, bytes)
+        case StagingWrite(o, bytes) => b.host.write(StagingBase + o, bytes)
+        case ExpectStaging(o, bytes) => assert(b.host.read(StagingBase + o, bytes.size) == bytes, s"staging at 0x${o.toHexString}")
+        case ExpectGuestMem(a, bytes) => assert(b.guest.read(a, bytes.size) == bytes, s"guest memory at 0x${a.toHexString}")
       }
-      dut.clockDomain.waitSampling(200)
-      assert(b.written.isEmpty, s"${b.written.size} records the transcript does not expect")
-      assert((b.hostRead(Bar0.reg("STATUS")) & 4) == 0, "a command was refused")
+      dut.clockDomain.waitSampling(300)
+      assert(b.records.isEmpty, s"${b.records.size} records the transcript does not expect: ${b.records.map(r => b.decode(r._2))}")
+      assert(!b.refused, "a command was refused")
     }
   }
 
@@ -114,17 +53,16 @@ class CardLinkSpec extends AnyFunSuite {
     compiled.doSim { dut =>
       val b = new Bench(dut)
       b.setUp(3)
-      val bytes = Contract.encode(Contract.command("INTERRUPT"), 5, 0, Map("bits" -> 1)) // the card expects 1
-      b.sendCommand(1, bytes)
-      val (_, ack) = b.nextRecord()
-      assert(ack == le(Contract.encode(Contract.record("CMD_ACK"), 1, 0, Map("cmd_seq" -> 1))))
-      assert((b.hostRead(Bar0.reg("STATUS")) & 4) == 4)
+      b.sendRaw(1, Contract.encode(Contract.command("INTERRUPT"), 5, 0, Map("bits" -> 1))) // the card expects 1
+      b.nextCommand = 2
+      b.ackCommand()
+      assert(b.refused)
       assert((dut.io.irq.toBigInt & 1) == 0)
-      // torn: the tail copy differs
       val torn = Contract.encode(Contract.command("INTERRUPT"), 2, 0, Map("bits" -> 1))
       torn(Message.TailOffset) = 9
-      b.sendCommand(2, torn)
-      b.nextRecord()
+      b.sendRaw(2, torn)
+      b.nextCommand = 3
+      b.ackCommand()
       assert((dut.io.irq.toBigInt & 1) == 0)
     }
   }
@@ -134,15 +72,93 @@ class CardLinkSpec extends AnyFunSuite {
       val b = new Bench(dut)
       b.setUp(1) // two entries
       for (i <- 0 until 4) b.guestWrite(3, "QueueNotify", i)
-      dut.clockDomain.waitSampling(100)
-      assert(b.written.size == 2, s"${b.written.size} records written into a two-entry inbox")
+      dut.clockDomain.waitSampling(200)
+      assert(b.records.size == 2, s"${b.records.size} records written into a two-entry inbox")
       assert((b.hostRead(Bar0.reg("STATUS")) & 2) == 2, "STATUS does not show the inbox full")
-      b.written.clear()
+      b.records.clear()
       b.hostWrite(Bar0.reg("INBOX_CONSUMED"), 2)
-      dut.clockDomain.waitSampling(100)
-      assert(b.written.size == 2)
-      val queues = b.written.map { case (_, d) => ((d >> (8 * Contract.record("NOTIFY").field("queue").offset)) & 0xffff).toInt }
+      dut.clockDomain.waitSampling(200)
+      val queues = b.records.map { case (_, d) => ((d >> (8 * Contract.record("NOTIFY").field("queue").offset)) & 0xffff).toInt }
       assert(queues == Seq(2, 3))
+    }
+  }
+
+  test("copies outside the windows, of bad length, beyond staging or misaligned are refused and move nothing") {
+    compiled.doSim { dut =>
+      val b = new Bench(dut)
+      b.setUp(4)
+      val cases = Seq[(BigInt, Long, Long, Int, String)](
+        (BigInt(Contract.Map.Ram), 64, 0, Contract.CopyStatus.OutsideWindow, "main memory"),
+        (D + Contract.Map.DmaRegionSize - 16, 32, 0x30, Contract.CopyStatus.OutsideWindow, "across the window's end"),
+        (D - 64, 128, 0, Contract.CopyStatus.OutsideWindow, "across the window's start"),
+        (BigInt("ffffffffffffffc0", 16), 128, 0, Contract.CopyStatus.OutsideWindow, "wrapping past 2^64"),
+        (D, 0, 0, Contract.CopyStatus.BadLength, "zero length"),
+        (D, 64, StagingSize - 32, Contract.CopyStatus.BadLength, "beyond staging"),
+        (D + 3, 16, 0, Contract.CopyStatus.Misaligned, "staging misaligned with the guest address"))
+      var tag = 100
+      for ((g, len, staging, status, what) <- cases; name <- Seq("COPY_TO_HOST", "COPY_FROM_HOST")) {
+        val hostBefore = b.host.touched; val guestBefore = b.guest.touched
+        tag += 1
+        b.command(name, 0, Map("tag" -> tag, "len" -> len, "guest" -> g, "staging" -> staging))
+        b.expectRecord("COPY_DONE", 0, Map("tag" -> tag, "status" -> status))
+        b.ackCommand()
+        assert(b.guest.touched == guestBefore, s"$name $what touched guest memory")
+        assert(b.host.touched.filter(_ < InboxBase) == hostBefore.filter(_ < InboxBase) &&
+          b.host.touched.filter(_ >= StagingBase) == hostBefore.filter(_ >= StagingBase), s"$name $what touched staging")
+      }
+      assert(!b.refused, "a copy refusal is reported in COPY_DONE, not STATUS")
+    }
+  }
+
+  test("a copy writes exactly its bytes: partial first and last lines keep their neighbours") {
+    compiled.doSim { dut =>
+      val b = new Bench(dut)
+      b.setUp(4)
+      b.guest.write(D + 0x400, Seq.fill(256)(0xee))
+      b.host.write(StagingBase + 0x200, (0 until 256).map(_ & 0xff))
+      b.command("COPY_FROM_HOST", 0, Map("tag" -> 1, "len" -> 150, "guest" -> (D + 0x40d), "staging" -> 0x20d))
+      b.expectRecord("COPY_DONE", 0, Map("tag" -> 1, "status" -> 0)); b.ackCommand()
+      assert(b.guest.read(D + 0x400, 0x0d).forall(_ == 0xee), "bytes before the copy changed")
+      assert(b.guest.read(D + 0x40d, 150) == (0x0d until 0x0d + 150).map(_ & 0xff))
+      assert(b.guest.read(D + 0x40d + 150, 256 - 0x0d - 150).forall(_ == 0xee), "bytes after the copy changed")
+      b.host.write(StagingBase + 0x600, Seq.fill(256)(0x11))
+      b.command("COPY_TO_HOST", 0, Map("tag" -> 2, "len" -> 70, "guest" -> (D + 0x43f), "staging" -> 0x63f))
+      b.expectRecord("COPY_DONE", 0, Map("tag" -> 2, "status" -> 0)); b.ackCommand()
+      assert(b.host.read(StagingBase + 0x600, 0x3f).forall(_ == 0x11))
+      assert(b.host.read(StagingBase + 0x63f, 70) == b.guest.read(D + 0x43f, 70))
+      assert(b.host.read(StagingBase + 0x63f + 70, 64).forall(_ == 0x11))
+    }
+  }
+
+  test("USED_PUSH fills the used ring in order, wraps it, and spills an entry across a line") {
+    compiled.doSim { dut =>
+      val b = new Bench(dut)
+      b.setUp(4)
+      val used = D + 0x2000 // 64-byte aligned, so entry 7 starts at byte 60 and spills into the next line
+      b.readyQueue(8, used)
+      for (i <- 0 until 10) {
+        b.command("USED_PUSH", 0, Map("queue" -> 0, "id" -> (100 + i), "len" -> (1000 + i)))
+        b.ackCommand()
+        assert(b.guest.read(used + 2, 2) == Seq((i + 1) & 0xff, (i + 1) >> 8), s"used index after push $i")
+        val e = used + 4 + 8 * (i % 8)
+        assert(b.guest.read(e, 8) == (0 until 4).map(k => ((100 + i) >> (8 * k)) & 0xff) ++ (0 until 4).map(k => ((1000 + i) >> (8 * k)) & 0xff), s"entry $i")
+      }
+      assert(b.guest.read(used, 2) == Seq(0, 0), "the card wrote the used ring's flags")
+      assert(!b.refused)
+    }
+  }
+
+  test("USED_PUSH on a queue that is not ready, or whose ring is outside the windows, is refused") {
+    compiled.doSim { dut =>
+      val b = new Bench(dut)
+      b.setUp(4)
+      b.command("USED_PUSH", 0, Map("queue" -> 0, "id" -> 1, "len" -> 1))
+      b.ackCommand()
+      assert(b.refused && b.guest.touched.isEmpty, "pushed to a queue that is not ready")
+      b.readyQueue(8, BigInt(Contract.Map.Ram) + 0x1000) // the guest points the used ring at main memory
+      b.command("USED_PUSH", 0, Map("queue" -> 0, "id" -> 1, "len" -> 1))
+      b.ackCommand()
+      assert(b.guest.touched.isEmpty, "wrote a used ring outside the windows")
     }
   }
 }

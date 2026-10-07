@@ -6,7 +6,7 @@ mod transcripts;
 
 use cardd::bar::Bar;
 use cardd::contract::{bar0, record, virtio_mmio, MAGIC, VERSION};
-use cardd::link::{self, Commands, Device, Inbox, LinkError};
+use cardd::link::{self, Commands, Device, HostMem, Inbox, LinkError};
 use cardd::message::{self, SIZE};
 use cardd::slot::{Event, Slot};
 use transcripts::{Step, TRANSCRIPTS};
@@ -27,6 +27,17 @@ impl Bar for FakeBar {
     }
     fn write32(&mut self, offset: usize, value: u32) {
         self.writes.push((offset, value));
+    }
+}
+
+/// An inbox in plain memory.
+struct Ring(Vec<[u8; SIZE]>);
+impl HostMem for Ring {
+    fn read(&mut self, offset: usize, buf: &mut [u8]) {
+        buf.copy_from_slice(&self.0[offset / SIZE][..buf.len()]);
+    }
+    fn write(&mut self, offset: usize, data: &[u8]) {
+        self.0[offset / SIZE][..data.len()].copy_from_slice(data);
     }
 }
 
@@ -63,16 +74,16 @@ fn transcripts_replay_on_the_host_side() {
         bar.writes.clear();
 
         let mut inbox = Inbox::new(3);
-        let mut mem = vec![[0u8; SIZE]; inbox.entries()];
+        let mut mem = Ring(vec![[0u8; SIZE]; inbox.entries()]);
         let mut commands = Commands::default();
         let mut slots = vec![Slot::default(); 8];
         for s in t.steps {
             match s {
                 Step::ExpectRecord(m) => {
                     // the card writes the record; cardd must take exactly it, and acknowledge it
-                    assert_eq!(inbox.poll(&mem, &mut bar).unwrap(), None, "{}: a record before the card wrote one", t.name);
-                    mem[inbox.slot_of(m.seq)] = m.bytes;
-                    let (h, b) = inbox.poll(&mem, &mut bar).unwrap().expect("record not taken");
+                    assert_eq!(inbox.poll(&mut mem, &mut bar).unwrap(), None, "{}: a record before the card wrote one", t.name);
+                    mem.0[inbox.slot_of(m.seq)] = m.bytes;
+                    let (h, b) = inbox.poll(&mut mem, &mut bar).unwrap().expect("record not taken");
                     assert_eq!((h.seq, h.slot), (m.seq, m.slot));
                     assert_eq!(bar.writes.pop(), Some((bar0::reg::INBOX_CONSUMED, m.seq)));
                     if h.kind == record::CMD_ACK.kind {
@@ -113,18 +124,18 @@ fn notify(seq: u32) -> [u8; SIZE] {
 fn the_inbox_waits_for_torn_and_stale_records_and_refuses_skips() {
     let mut bar = FakeBar::default();
     let mut inbox = Inbox::new(1); // two entries
-    let mut mem = vec![[0u8; SIZE]; 2];
+    let mut mem = Ring(vec![[0u8; SIZE]; 2]);
     let mut torn = notify(1);
     torn[60] = 7;
-    mem[0] = torn;
-    assert_eq!(inbox.poll(&mem, &mut bar), Ok(None), "a torn record is not taken");
-    mem[0] = notify(1);
-    assert!(inbox.poll(&mem, &mut bar).unwrap().is_some());
-    mem[1] = notify(2);
-    assert!(inbox.poll(&mem, &mut bar).unwrap().is_some());
-    assert_eq!(inbox.poll(&mem, &mut bar), Ok(None), "record 1 is from the last lap: stale");
-    mem[0] = notify(5);
-    assert_eq!(inbox.poll(&mem, &mut bar), Err(LinkError::Skipped { expected: 3, found: 5 }));
+    mem.0[0] = torn;
+    assert_eq!(inbox.poll(&mut mem, &mut bar), Ok(None), "a torn record is not taken");
+    mem.0[0] = notify(1);
+    assert!(inbox.poll(&mut mem, &mut bar).unwrap().is_some());
+    mem.0[1] = notify(2);
+    assert!(inbox.poll(&mut mem, &mut bar).unwrap().is_some());
+    assert_eq!(inbox.poll(&mut mem, &mut bar), Ok(None), "record 1 is from the last lap: stale");
+    mem.0[0] = notify(5);
+    assert_eq!(inbox.poll(&mut mem, &mut bar), Err(LinkError::Skipped { expected: 3, found: 5 }));
 }
 
 #[test]

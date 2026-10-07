@@ -3,6 +3,29 @@
 What we did and learned, newest first. Current facts live in [README.md](README.md); this page keeps
 the path, including conclusions that turned out wrong, so nobody re-derives them.
 
+## 2026-10-06 (small hours): cardd serves a virtio-blk read against the RTL
+
+- S3, parts 2 and 3: cardd's phase-1 backend (GuestMem through copy commands, the split-queue walker,
+  virtio-blk IN/OUT/FLUSH/GET_ID) serves blk_read against a Rust model of the card; hostile chains
+  (loops, buffers in main memory, INDIRECT, readable after writable, next outside the queue, an
+  available index running ahead) are refused without a panic. Randomised input: 100,000 rings and
+  requests, 100,000 messages, no panic, nothing outside the windows touched.
+- Co-simulation: cardd/examples/cosim.rs (the real Link, CopyMem, queue and blk code) talks to the
+  SpinalSim bench over a pipe, one line per BAR or host-memory access; it serves the read against the
+  RTL in 322 requests and 628 cycles, and guest memory ends as the transcript says.
+
+## 2026-10-06 (later that night): copies and used-ring pushes in RTL
+
+- S3, part 1: the command processor executes COPY_TO_HOST, COPY_FROM_HOST and USED_PUSH as state
+  machines (64-byte lines, byte masks, window checks against channel B and the ring region).
+  SpinalSim: the blk_read transcript (a full virtio-blk read served by copies) passes with random
+  back-pressure on every interface; hostile copies (outside the windows, across their ends, wrapping
+  past 2^64, zero length, beyond staging, misaligned) are refused and move nothing; partial lines keep
+  their neighbours; the used ring wraps and an entry spilling across a line lands whole. Disabling the
+  window check fails two tests. 23 RTL tests.
+- A used-ring entry is 4-byte aligned (used + 4 + 8k) and can straddle a 64-byte line: the push writes
+  twice then. The card requires the used ring itself to be 8-byte aligned.
+
 ## 2026-10-06 (night): the virtio-mmio shim and the mailbox
 
 - S2: 8 virtio-mmio v2 shims and the BAR0 mailbox in SpinalHDL, replaying the blk_init transcript in

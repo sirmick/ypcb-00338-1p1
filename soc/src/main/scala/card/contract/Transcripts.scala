@@ -20,6 +20,14 @@ case class ExpectRecord(name: String, slot: Int, values: Map[String, BigInt]) ex
 case class HostCommand(name: String, slot: Int, values: Map[String, BigInt]) extends Step
 /** The slot's PLIC line must be at this level. */
 case class ExpectIrq(slot: Int, level: Boolean) extends Step
+/** The guest writes these bytes into its memory (a driver filling rings and buffers). */
+case class GuestMem(address: Long, bytes: Seq[Int]) extends Step
+/** The host writes these bytes into its staging area (data for a COPY_FROM_HOST). */
+case class StagingWrite(offset: Long, bytes: Seq[Int]) extends Step
+/** Host staging must hold these bytes now (after a COPY_TO_HOST). */
+case class ExpectStaging(offset: Long, bytes: Seq[Int]) extends Step
+/** Guest memory must hold these bytes now (after a COPY_FROM_HOST or a USED_PUSH). */
+case class ExpectGuestMem(address: Long, bytes: Seq[Int]) extends Step
 
 case class Transcript(name: String, doc: String, steps: Seq[Step]) {
   /** For each step, the sequence number its message gets (records and commands count separately; 0 for
@@ -92,6 +100,55 @@ object Transcripts {
     GuestRead(0, "InterruptStatus", 0)
   ))
 
+  private def le(v: Long, n: Int): Seq[Int] = (0 until n).map(i => ((v >>> (8 * i)) & 0xff).toInt)
+  private def desc(addr: Long, len: Int, flags: Int, next: Int) = le(addr, 8) ++ le(len, 4) ++ le(flags, 2) ++ le(next, 2)
+  private val D = Contract.Map.DmaRegion
+  /** Sector 5's contents, as the host's disk holds them. */
+  val sector5: Seq[Int] = (0 until 512).map(i => (i * 7 + 5) & 0xff)
+  private def copyDone(tag: Int) = Seq(
+    ExpectRecord("COPY_DONE", 0, Map("tag" -> tag, "status" -> 0)))
+
+  /** A virtio-blk read of sector 5, served the phase-1 way: the host walks the rings with copies. */
+  val blkRead = Transcript("blk_read", "virtio-blk: the guest reads sector 5; the host copies the rings and request out, the data and status in, pushes the used entry and interrupts",
+    blkInit.steps.takeWhile { case GuestWrite(_, "QueueNotify", _) => false; case _ => true } ++ Seq(
+      // the driver's request: header (IN, sector 5), 512-byte buffer, status byte; then the available ring
+      GuestMem(D + 0x0000, desc(D + 0x3000, 16, 1, 1) ++ desc(D + 0x3100, 512, 3, 2) ++ desc(D + 0x3400, 1, 2, 0)),
+      GuestMem(D + 0x3000, le(0, 4) ++ le(0, 4) ++ le(5, 8)),
+      GuestMem(D + 0x1000, le(0, 2) ++ le(1, 2) ++ le(0, 2)),
+      GuestMem(D + 0x2000, le(0, 8)),
+      GuestWrite(0, "QueueNotify", 0),
+      ExpectRecord("NOTIFY", 0, Map("queue" -> 0)),
+      // the host reads the available ring, the descriptors and the header
+      HostCommand("COPY_TO_HOST", 0, Map("tag" -> 1, "len" -> 6, "guest" -> (D + 0x1000), "staging" -> 0x000)),
+      copyDone(1).head, ExpectRecord("CMD_ACK", 0, Map("cmd_seq" -> 1)),
+      ExpectStaging(0x000, le(0, 2) ++ le(1, 2) ++ le(0, 2)),
+      HostCommand("COPY_TO_HOST", 0, Map("tag" -> 2, "len" -> 48, "guest" -> (D + 0x0000), "staging" -> 0x040)),
+      copyDone(2).head, ExpectRecord("CMD_ACK", 0, Map("cmd_seq" -> 2)),
+      ExpectStaging(0x040, desc(D + 0x3000, 16, 1, 1) ++ desc(D + 0x3100, 512, 3, 2) ++ desc(D + 0x3400, 1, 2, 0)),
+      HostCommand("COPY_TO_HOST", 0, Map("tag" -> 3, "len" -> 16, "guest" -> (D + 0x3000), "staging" -> 0x080)),
+      copyDone(3).head, ExpectRecord("CMD_ACK", 0, Map("cmd_seq" -> 3)),
+      ExpectStaging(0x080, le(0, 4) ++ le(0, 4) ++ le(5, 8)),
+      // it reads sector 5 from its disk and copies it, then the status, into the guest's buffers
+      StagingWrite(0x100, sector5),
+      HostCommand("COPY_FROM_HOST", 0, Map("tag" -> 4, "len" -> 512, "guest" -> (D + 0x3100), "staging" -> 0x100)),
+      copyDone(4).head, ExpectRecord("CMD_ACK", 0, Map("cmd_seq" -> 4)),
+      StagingWrite(0x300, Seq(0)),
+      HostCommand("COPY_FROM_HOST", 0, Map("tag" -> 5, "len" -> 1, "guest" -> (D + 0x3400), "staging" -> 0x300)),
+      copyDone(5).head, ExpectRecord("CMD_ACK", 0, Map("cmd_seq" -> 5)),
+      ExpectGuestMem(D + 0x3100, sector5),
+      ExpectGuestMem(D + 0x3400, Seq(0)),
+      // completes the request and interrupts
+      HostCommand("USED_PUSH", 0, Map("queue" -> 0, "id" -> 0, "len" -> 513)),
+      ExpectRecord("CMD_ACK", 0, Map("cmd_seq" -> 6)),
+      ExpectGuestMem(D + 0x2000, le(0, 2) ++ le(1, 2) ++ le(0, 4) ++ le(513, 4)),
+      HostCommand("INTERRUPT", 0, Map("bits" -> 1)),
+      ExpectRecord("CMD_ACK", 0, Map("cmd_seq" -> 7)),
+      ExpectIrq(0, true),
+      GuestRead(0, "InterruptStatus", 1),
+      GuestWrite(0, "InterruptACK", 1),
+      ExpectIrq(0, false)
+    ))
+
   /** One example of every record and command, for encoding tests on both sides. */
   val everyMessage = Transcript("every_message", "one of each record and command, with fields near their limits", Seq(
     ExpectRecord("NOTIFY", 7, Map("queue" -> 1)),
@@ -109,5 +166,5 @@ object Transcripts {
     HostCommand("CONSOLE_RX", 0, Map("count" -> 2, "data" -> BigInt(1, "ls".getBytes.reverse)))
   ))
 
-  val all = Seq(blkInit, everyMessage)
+  val all = Seq(blkInit, blkRead, everyMessage)
 }

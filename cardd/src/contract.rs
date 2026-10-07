@@ -145,6 +145,17 @@ pub mod bar0 {
     }
 }
 
+/// COPY_DONE status codes.
+pub mod copy_status {
+    pub const DONE: u16 = 0;
+    pub const OUTSIDE_WINDOW: u16 = 1;
+    pub const BAD_LENGTH: u16 = 2;
+    pub const MISALIGNED: u16 = 3;
+}
+
+/// The DMA windows (base, size) a guest range in a copy or a used ring must lie wholly inside.
+pub const DMA_WINDOWS: &[(u64, u64)] = &[(0x100000000, 0x80000000), (0x30000000, 0x10000)];
+
 /// Records and commands: 64 bytes, little-endian, sequence number at both ends.
 pub mod message {
     pub const SIZE: usize = 64;
@@ -187,7 +198,7 @@ pub mod command {
     pub const COPY_TO_HOST: Layout = Layout { name: "COPY_TO_HOST", kind: 1, fields: &[Field { name: "tag", offset: 8, bytes: 4 }, Field { name: "len", offset: 12, bytes: 4 }, Field { name: "guest", offset: 16, bytes: 8 }, Field { name: "staging", offset: 24, bytes: 4 }] };
     /// copy from host staging into a guest range (checked against the window)
     pub const COPY_FROM_HOST: Layout = Layout { name: "COPY_FROM_HOST", kind: 2, fields: &[Field { name: "tag", offset: 8, bytes: 4 }, Field { name: "len", offset: 12, bytes: 4 }, Field { name: "guest", offset: 16, bytes: 8 }, Field { name: "staging", offset: 24, bytes: 4 }] };
-    /// append an entry to a queue's used ring, then publish the used index (release)
+    /// append {id, len} to a ready queue's used ring, then publish the new used index; refused if the ring lies outside the windows
     pub const USED_PUSH: Layout = Layout { name: "USED_PUSH", kind: 3, fields: &[Field { name: "queue", offset: 8, bytes: 2 }, Field { name: "id", offset: 12, bytes: 4 }, Field { name: "len", offset: 16, bytes: 4 }] };
     /// set InterruptStatus bits (1 used buffer, 2 configuration change)
     pub const INTERRUPT: Layout = Layout { name: "INTERRUPT", kind: 4, fields: &[Field { name: "bits", offset: 8, bytes: 4 }] };

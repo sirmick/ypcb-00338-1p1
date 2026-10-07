@@ -105,6 +105,17 @@ object Generate {
        |    }
        |}
        |
+       |/// COPY_DONE status codes.
+       |pub mod copy_status {
+       |    pub const DONE: u16 = ${Contract.CopyStatus.Done};
+       |    pub const OUTSIDE_WINDOW: u16 = ${Contract.CopyStatus.OutsideWindow};
+       |    pub const BAD_LENGTH: u16 = ${Contract.CopyStatus.BadLength};
+       |    pub const MISALIGNED: u16 = ${Contract.CopyStatus.Misaligned};
+       |}
+       |
+       |/// The DMA windows (base, size) a guest range in a copy or a used ring must lie wholly inside.
+       |pub const DMA_WINDOWS: &[(u64, u64)] = &[${Contract.dmaWindows.map { case (b, sz) => s"(${hex(b)}, ${hex(sz)})" }.mkString(", ")}];
+       |
        |/// Records and commands: 64 bytes, little-endian, sequence number at both ends.
        |pub mod message {
        |    pub const SIZE: usize = ${Message.Size};
@@ -145,6 +156,10 @@ object Generate {
       case GuestWrite(slot, reg, v) => s"GuestWrite { slot: $slot, reg: virtio_mmio::reg::${snake(reg)}, value: ${hex(v)} }"
       case GuestRead(slot, reg, v) => s"GuestRead { slot: $slot, reg: virtio_mmio::reg::${snake(reg)}, expect: ${hex(v)} }"
       case ExpectIrq(slot, level) => s"ExpectIrq { slot: $slot, level: $level }"
+      case GuestMem(a, b) => s"GuestMem { address: ${hex(a)}, bytes: &[${b.mkString(", ")}] }"
+      case StagingWrite(o, b) => s"StagingWrite { offset: ${hex(o)}, bytes: &[${b.mkString(", ")}] }"
+      case ExpectStaging(o, b) => s"ExpectStaging { offset: ${hex(o)}, bytes: &[${b.mkString(", ")}] }"
+      case ExpectGuestMem(a, b) => s"ExpectGuestMem { address: ${hex(a)}, bytes: &[${b.mkString(", ")}] }"
       case r @ ExpectRecord(n, slot, values) =>
         val l = Contract.record(n)
         s"ExpectRecord(Msg { layout: &record::$n, seq: $q, slot: $slot, values: &[${valuesRust(l, values)}],\n            bytes: [${Contract.encode(l, q, slot, values).map(b => f"0x${b & 0xff}%02x").mkString(", ")}] })"
@@ -179,6 +194,10 @@ object Generate {
        |    ExpectRecord(Msg),
        |    HostCommand(Msg),
        |    ExpectIrq { slot: usize, level: bool },
+       |    GuestMem { address: u64, bytes: &'static [u8] },
+       |    StagingWrite { offset: u64, bytes: &'static [u8] },
+       |    ExpectStaging { offset: u64, bytes: &'static [u8] },
+       |    ExpectGuestMem { address: u64, bytes: &'static [u8] },
        |}
        |
        |pub struct Transcript {

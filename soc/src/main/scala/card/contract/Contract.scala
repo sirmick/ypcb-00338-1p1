@@ -139,18 +139,26 @@ object Contract {
       f("desc", 16, 8), f("driver", 24, 8, "available ring"), f("device", 32, 8, "used ring"))),
     Layout("FEATURES", 4, "the guest set FEATURES_OK: the features it accepted", Seq(f("features", 8, 8))),
     Layout("COPY_DONE", 5, "a copy command finished", Seq(
-      f("tag", 8, 4), f("status", 12, 2, "0 done; 1 refused: outside the window; 2 refused: bad length"))),
+      f("tag", 8, 4), f("status", 12, 2, "0 done; 1 outside the DMA windows; 2 bad length or outside staging; 3 misaligned"))),
     Layout("CONSOLE_TX", 6, "bytes the guest sent to the 16550", Seq(f("count", 8, 1), f("data", 12, 48))),
     Layout("CMD_ACK", 7, "commands consumed up to this sequence number", Seq(f("cmd_seq", 8, 4)))
   )
 
   // Host to card: written by the host into the BAR0 command ring, then CMD_PRODUCED.
+  // Copies move whole 64-byte lines with byte masks, so a copy's staging offset must lie at the same
+  // place in its line as the guest address (staging % 64 == guest % 64); otherwise COPY_DONE says 3.
+  // A guest range must lie wholly inside one DMA window: the DMA region (channel B) or the ring region.
+  /** Copy status codes (COPY_DONE's `status`). */
+  object CopyStatus { val Done = 0; val OutsideWindow = 1; val BadLength = 2; val Misaligned = 3 }
+  /** The DMA windows a guest range may lie in (S8 makes them programmable by the guest's kernel). */
+  val dmaWindows = Seq((Map.DmaRegion, Map.DmaRegionSize), (Map.RingRegion, Map.RingRegionSize))
+
   val commands = Seq(
     Layout("COPY_TO_HOST", 1, "copy a guest range (checked against the window) into host staging", Seq(
       f("tag", 8, 4), f("len", 12, 4), f("guest", 16, 8), f("staging", 24, 4, "offset in host staging"))),
     Layout("COPY_FROM_HOST", 2, "copy from host staging into a guest range (checked against the window)", Seq(
       f("tag", 8, 4), f("len", 12, 4), f("guest", 16, 8), f("staging", 24, 4))),
-    Layout("USED_PUSH", 3, "append an entry to a queue's used ring, then publish the used index (release)", Seq(
+    Layout("USED_PUSH", 3, "append {id, len} to a ready queue's used ring, then publish the new used index; refused if the ring lies outside the windows", Seq(
       f("queue", 8, 2), f("id", 12, 4), f("len", 16, 4))),
     Layout("INTERRUPT", 4, "set InterruptStatus bits (1 used buffer, 2 configuration change)", Seq(f("bits", 8, 4))),
     Layout("CONSOLE_RX", 5, "bytes for the 16550's receive FIFO", Seq(f("count", 8, 1), f("data", 12, 48)))
