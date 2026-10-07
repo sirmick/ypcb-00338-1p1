@@ -3,6 +3,16 @@
 What we did and learned, newest first. Current facts live in [README.md](README.md); this page keeps
 the path, including conclusions that turned out wrong, so nobody re-derives them.
 
+## 2026-10-06 (night): the virtio-mmio shim and the mailbox
+
+- S2: 8 virtio-mmio v2 shims and the BAR0 mailbox in SpinalHDL, replaying the blk_init transcript in
+  SpinalSim: every record's bytes and inbox address match; BAR0 outside the mailbox reads 0; a
+  command with bad sequence numbers is refused and acknowledged; a two-entry inbox is never overrun.
+  Two deliberate bugs (no FEATURES record; wrong inbox stride) each fail the transcript test.
+- The protocol gained an acknowledgement in the transcript: the card sends CMD_ACK after each command,
+  so the host knows which ring entries are free.
+- cardd (Rust, no dependencies) replays the same transcript from the host side.
+
 ## 2026-10-06 (late evening): the host-link contract
 
 - S1: one Scala contract (BAR0, 64-byte records and commands, virtio-mmio registers, the guest map) generates

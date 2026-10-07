@@ -84,6 +84,7 @@ object Transcripts {
     ExpectRecord("NOTIFY", 0, Map("queue" -> 0)),
     ExpectIrq(0, false),
     HostCommand("INTERRUPT", 0, Map("bits" -> 1)),
+    ExpectRecord("CMD_ACK", 0, Map("cmd_seq" -> 1)),
     ExpectIrq(0, true),
     GuestRead(0, "InterruptStatus", 1),
     GuestWrite(0, "InterruptACK", 1),

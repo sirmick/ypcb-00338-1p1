@@ -60,7 +60,7 @@ linux/                     (S5) OpenSBI, kernel config, device trees, Debian roo
 |---|---|---|---|
 | S0 | Toolchain, and the core's cost under openXC7 | ✅ done | VexiiRiscv's MicroSoc with LiteX's "debian" core options (RV64IMAFDC, Sv39, 4-way L1s, BTB/RAS/GShare): 16.5k LUTs, 8.5k FFs, 54 BRAM, 16 DSP, place and route 2 min, nextpnr Fmax 118.7 MHz (RV64IMAC: 10.9k LUTs, 124.5 MHz). A self-test of integer, M, A and double-precision FPU instructions passes on the card at 50 MHz ([designs/vexii-s0](designs/vexii-s0/)) |
 | S1 | The contract and its generators | ✅ done | [Contract.scala](soc/src/main/scala/card/contract/Contract.scala) generates Rust ([cardd/src/contract.rs](cardd/src/contract.rs)), a device-tree fragment, [a readable table](soc/gen/CONTRACT.md) and shared transcripts; the RTL's message encoder (SpinalSim, 12 kinds) and cardd (5 tests) produce identical bytes; editing the source makes the freshness test fail until all four outputs are regenerated |
-| S2 | virtio-mmio shim and the mailbox, tested both sides | ⬜ | |
+| S2 | virtio-mmio shim and the mailbox, tested both sides | ✅ done | [Link.scala](soc/src/main/scala/card/Link.scala): 8 virtio-mmio v2 shims and the BAR0 mailbox (registers, command ring, inbox writer with flow control). SpinalSim replays `blk_init` against it (every record's bytes and inbox address checked), plus BAR0 isolation, refused commands and inbox flow control; deliberate bugs fail the tests. cardd replays the same transcript from the host side (slot programming, inbox, command ring), with attack cases. 18 RTL tests, 10 Rust tests |
 | S3 | Phase-1 copy engine; hostile cases; co-simulation | ⬜ | |
 | S4 | On the card: link latency and card-initiated DMA | ⬜ | |
 | S5 | One core boots Linux | ⬜ | |
@@ -101,6 +101,11 @@ features, `QueueNumMax`, config space) answers the guest locally; `QueueNotify`,
 addresses and driver features become notify records in the host-inbox model; a doorbell sets
 `InterruptStatus` and drives a level PLIC line; BAR offsets outside the mailbox read zero and
 ignore writes. `cardd`'s fake-card tests replay the same transcripts and pass.
+
+**Done 2026-10-06.** The guest and host buses are a simple register bus for now (`RegBus`), to be wrapped
+in TileLink and the PCIe BAR. Synthesised alone under openXC7: about 8k LUTs and 14k flip-flops for 8
+slots (the slots' queue and config registers, and LUTRAM record FIFOs), 1.3% of the device. Commands
+other than INTERRUPT are refused until S3.
 
 ## S3: the copy engine, hostile cases, co-simulation
 

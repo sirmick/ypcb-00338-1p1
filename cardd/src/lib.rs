@@ -6,5 +6,8 @@
 //! (`soc/src/main/scala/card/contract/Contract.scala`); [`message`] encodes and checks messages.
 #![forbid(unsafe_code)]
 
+pub mod bar;
 pub mod contract;
+pub mod link;
 pub mod message;
+pub mod slot;
