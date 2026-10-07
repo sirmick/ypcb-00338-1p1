@@ -66,15 +66,25 @@ class TlpHost(rx: Stream[Fragment[Axis64]], tx: Stream[Fragment[Axis64]], cd: Cl
         tlpsFromCard += ((fmtType, addr, len))
         val tag = (t(1) >> 8) & 0xff
         val reqId = (t(1) >> 16) & 0xffff
-        val data = host.readLine(addr)
-        val cpl = Seq(BigInt(Tlp.CplD.toLong << 24 | 16), BigInt(HostId.toLong << 16 | 64), BigInt(reqId << 16 | tag << 8)) ++
-          (0 until 16).map(i => swap((data >> (32 * i)) & 0xffffffffL))
-        send(cpl)
+        readPolicy match {
+          case "answer" => send(completion(addr, reqId, tag))
+          case "error" => send(Seq(BigInt(Tlp.Cpl.toLong << 24), BigInt(HostId.toLong << 16 | 1 << 13 | 64), BigInt(reqId << 16 | tag << 8))) // UR
+          case "drop" => unanswered.enqueue((addr, reqId, tag))
+        }
       case Tlp.CplD =>
         assert(((t(2) >> 16) & 0xffff) == HostId, "a completion for someone else")
         cplData.enqueue(swap(BigInt(t(3))))
       case other => throw new AssertionError(f"unexpected TLP from the card: fmt/type 0x$other%02x")
     }
+  }
+  /** How the host answers the card's reads: "answer" (CplD), "error" (an Unsupported Request completion,
+    * as when the IOMMU blocks the read) or "drop" (no answer; kept in `unanswered`). */
+  var readPolicy = "answer"
+  val unanswered = mutable.Queue[(BigInt, Long, Long)]()
+  def completion(addr: BigInt, reqId: Long, tag: Long): Seq[BigInt] = {
+    val data = host.readLine(addr)
+    Seq(BigInt(Tlp.CplD.toLong << 24 | 16), BigInt(HostId.toLong << 16 | 64), BigInt(reqId << 16 | tag << 8)) ++
+      (0 until 16).map(i => swap((data >> (32 * i)) & 0xffffffffL))
   }
   /** Sends a TLP to the card, two DWs per beat. */
   def send(t: Seq[BigInt]): Unit = {

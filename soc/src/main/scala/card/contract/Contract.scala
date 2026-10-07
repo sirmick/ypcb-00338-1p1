@@ -141,7 +141,7 @@ object Contract {
       f("desc", 16, 8), f("driver", 24, 8, "available ring"), f("device", 32, 8, "used ring"))),
     Layout("FEATURES", 4, "the guest set FEATURES_OK: the features it accepted", Seq(f("features", 8, 8))),
     Layout("COPY_DONE", 5, "a copy command finished", Seq(
-      f("tag", 8, 4), f("status", 12, 2, "0 done; 1 outside the DMA windows; 2 bad length or outside staging; 3 misaligned"))),
+      f("tag", 8, 4), f("status", 12, 2, "0 done; 1 outside the DMA windows; 2 bad length or outside staging; 3 misaligned; 4 a read of host staging failed or timed out (the copy stopped part way)"))),
     Layout("CONSOLE_TX", 6, "bytes the guest sent to the 16550 (dropped while the card is not enabled)", Seq(f("count", 8, 1), f("data", 12, 48))),
     Layout("CMD_ACK", 7, "commands consumed up to this sequence number", Seq(f("cmd_seq", 8, 4)))
   )
@@ -151,7 +151,7 @@ object Contract {
   // place in its line as the guest address (staging % 64 == guest % 64); otherwise COPY_DONE says 3.
   // A guest range must lie wholly inside one DMA window: the DMA region (channel B) or the ring region.
   /** Copy status codes (COPY_DONE's `status`). */
-  object CopyStatus { val Done = 0; val OutsideWindow = 1; val BadLength = 2; val Misaligned = 3 }
+  object CopyStatus { val Done = 0; val OutsideWindow = 1; val BadLength = 2; val Misaligned = 3; val HostReadFailed = 4 }
   /** The DMA windows a guest range may lie in (S8 makes them programmable by the guest's kernel). */
   val dmaWindows = Seq((Map.DmaRegion, Map.DmaRegionSize), (Map.RingRegion, Map.RingRegionSize))
   /** Open only while GUEST_RESET holds the cores: how the host loads firmware, kernel and initramfs. */

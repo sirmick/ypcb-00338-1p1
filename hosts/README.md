@@ -40,10 +40,11 @@ everything is done over ssh, JTAG and its BMC. Any setup works; this one explain
 
 ### Quirks
 
-- **PCIe hot-add does not work for MMIO on this host.** After loading a PCIe design, a remove and
-  rescan enumerates the device and config space works, but memory reads return all-ones. Load the
-  design, then warm-reboot dino (the card stays powered and configured): the BIOS enumerates it and
-  MMIO works.
+- **PCIe hot-add works; a rescanned device starts disabled.** After loading a PCIe design, remove the
+  old device and rescan (`fpga pcie-cycle <bit>` does both): the card enumerates and gets its BAR, but
+  with Memory Space Enable off, so BAR0 reads all-ones until something enables it (a driver, VFIO, or
+  `setpci -s 04:00.0 COMMAND=2:2`). The BIOS sets that bit at boot, which is why a warm reboot seemed
+  necessary until 2026-10-06; it never was.
 - The kernel keeps the factory image's PCIe device registered after other designs are loaded and
   logs AER completion timeouts when something touches it; `echo 1 | sudo tee
   /sys/bus/pci/devices/0000:04:00.0/remove` stops it.

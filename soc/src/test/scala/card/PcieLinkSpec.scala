@@ -23,6 +23,7 @@ class PcieLinkSpec extends AnyFunSuite {
     dut.io.guest.valid #= false
     dut.io.uart.valid #= false
     dut.io.ramReady #= true
+    dut.io.linkReset #= false
     dut.io.completerId #= CardId
     dut.io.busMaster #= true
     dut.clockDomain.forkStimulus(10)
@@ -117,6 +118,78 @@ class PcieLinkSpec extends AnyFunSuite {
       assert(b.tlpsFromCard.isEmpty, "the card wrote without Bus Master Enable")
       dut.io.busMaster #= true
       b.expectRecord("NOTIFY", 2, Map("queue" -> 0))
+    }
+  }
+
+  lazy val quickTimeout = SimConfig.withConfig(SpinalConfig(targetDirectory = "tmp")).compile(PcieLink(8, completionTimeout = 3000))
+  val D = BigInt(Contract.Map.DmaRegion)
+  val Staging = BigInt("50000000", 16)
+  def copyIn(b: PcieBench, tag: Int): Unit =
+    b.command("COPY_FROM_HOST", 0, Map("tag" -> tag, "len" -> 128, "guest" -> (D + 0x1000), "staging" -> 0))
+
+  test("a read the host refuses (an error completion) fails the copy, and the link keeps working") {
+    compiled.doSim { dut =>
+      val b = new PcieBench(dut, BigInt("40000000", 16), Staging)
+      b.setUp()
+      b.readPolicy = "error"
+      copyIn(b, 1)
+      b.expectRecord("COPY_DONE", 0, Map("tag" -> 1, "status" -> Contract.CopyStatus.HostReadFailed))
+      b.expectRecord("CMD_ACK", 0, Map("cmd_seq" -> 1))
+      assert(b.guest.touched.isEmpty, "a failed read wrote guest memory")
+      b.readPolicy = "answer"
+      b.host.write(Staging, (0 until 128).map(_ & 0xff))
+      copyIn(b, 2)
+      b.expectRecord("COPY_DONE", 0, Map("tag" -> 2, "status" -> 0))
+      assert(b.guest.read(D + 0x1000, 128) == (0 until 128).map(_ & 0xff))
+    }
+  }
+
+  test("a read nobody answers times out, and its late answer is ignored") {
+    quickTimeout.doSim { dut =>
+      val b = new PcieBench(dut, BigInt("40000000", 16), Staging)
+      b.setUp()
+      b.readPolicy = "drop"
+      copyIn(b, 1)
+      b.expectRecord("COPY_DONE", 0, Map("tag" -> 1, "status" -> Contract.CopyStatus.HostReadFailed))
+      b.expectRecord("CMD_ACK", 0, Map("cmd_seq" -> 1))
+      val (addr, reqId, tag) = b.unanswered.dequeue()
+      b.unanswered.clear()
+      b.host.write(Staging, Seq.fill(128)(0x77))
+      copyIn(b, 2) // its first read is outstanding when the stale answer arrives
+      dut.clockDomain.waitSamplingWhere(b.unanswered.nonEmpty)
+      b.host.write(Staging, Seq.fill(64)(0xee))
+      b.send(b.completion(addr, reqId, tag)) // the timed-out read's answer, with the old tag
+      dut.clockDomain.waitSampling(200)
+      b.host.write(Staging, Seq.fill(64)(0x77))
+      b.readPolicy = "answer"
+      val (a2, r2, t2) = b.unanswered.dequeue()
+      b.send(b.completion(a2, r2, t2))
+      b.expectRecord("COPY_DONE", 0, Map("tag" -> 2, "status" -> 0))
+      assert(b.guest.read(D + 0x1000, 128) == Seq.fill(128)(0x77), "the stale answer was taken for the new read")
+    }
+  }
+
+  for (how <- Seq("a new session", "a link reset")) test(s"$how abandons a copy stuck on an unanswered read") {
+    compiled.doSim { dut =>
+      val b = new PcieBench(dut, BigInt("40000000", 16), Staging)
+      b.setUp()
+      b.readPolicy = "drop"
+      copyIn(b, 1)
+      dut.clockDomain.waitSamplingWhere(b.unanswered.nonEmpty)
+      dut.clockDomain.waitSampling(500)
+      assert(b.records.isEmpty, "the stuck copy finished")
+      if (how == "a link reset") {
+        dut.io.linkReset #= true; dut.clockDomain.waitSampling(10); dut.io.linkReset #= false
+        assert((b.hostRead(Bar0.reg("STATUS")) & 1) == 0, "a link reset must disable the card")
+      } else b.hostWrite(Bar0.reg("ENABLE"), 0)
+      b.readPolicy = "answer"
+      b.records.clear(); b.nextRecord = 1; b.nextCommand = 1
+      b.setUp()
+      b.host.write(Staging, (0 until 128).map(i => (i * 3) & 0xff))
+      copyIn(b, 7)
+      b.expectRecord("COPY_DONE", 0, Map("tag" -> 7, "status" -> 0))
+      b.expectRecord("CMD_ACK", 0, Map("cmd_seq" -> 1))
+      assert(b.guest.read(D + 0x1000, 128) == (0 until 128).map(i => (i * 3) & 0xff))
     }
   }
 

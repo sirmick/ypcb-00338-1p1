@@ -3,6 +3,38 @@
 What we did and learned, newest first. Current facts live in [README.md](README.md); this page keeps
 the path, including conclusions that turned out wrong, so nobody re-derives them.
 
+## 2026-10-06 (late night): restarting cardd, and hot-add works after all
+
+- Running `card up` on dino itself failed (it tried to build there). `card` now runs from either machine:
+  on dino it uses what buzz last copied to ~/fpga/card/.
+- Restarting cardd while the guest printed: the killed cardd had left the card enabled, and the card
+  wrote that session's records (seq 347) into the new cardd's inbox at the same bus address before
+  `set_up` disabled it; the new cardd rightly refused a sequence number far ahead. `link::quiesce`
+  (ENABLE 0, then a BAR0 read, whose completion cannot pass the card's earlier writes) now runs before
+  any memory the card can reach is mapped.
+- The crash that exposed it left the card stuck: it died mid-copy, the IOMMU blocked the card's read of
+  the vanished staging buffer, the root complex answered with an error completion (no data), and
+  PcieLink, which only knew completions with data, waited for ever; re-enabling reset the sequence
+  numbers but not the stuck command. Now: each read carries a new tag, an error completion or a
+  completion timeout fails the copy (COPY_DONE status 4), a new session or a PCIe link reset (the
+  hot reset vfio-pci does on every open) abandons the command in flight, and the host link drains a
+  memory answer still on its way so the shared arbiter cannot jam. The PCIe-side reset no longer
+  clears just one side of the clock-crossing FIFOs. Four new tests; removing the tag check fails one.
+- Recovering needed a reload, so the reload was the experiment: remove the device, load, rescan. The
+  card enumerated and was assigned its BAR, with Memory Space Enable off: reads all-ones. Setting it
+  (`setpci COMMAND=2:2`) gave "CARD". The gate-8 conclusion that hot-add does not work on this host was
+  wrong; the BIOS had simply been setting the bit. `card up --load` and `fpga pcie-cycle` now reload
+  with no reboot.
+- On the rebuilt card: cardd killed (SIGKILL) in the middle of the kernel load, then a plain `card up`:
+  the card recovered and Linux booted, no reload. `card console` gained an escape key (Ctrl-] then `r`
+  resets the guest while you watch it boot) through a control socket in cardd; `card reset` uses it.
+- S7 groundwork: the memory path keeps several requests in flight (round-robin arbiter with a FIFO of
+  who asked, an AXI bridge that issues line reads ahead and pipelines line writes, a Wishbone master
+  that strobes through stalls). Joined, the write fork and the arbiter formed a combinational loop
+  that the parts' own tests could not see; a register broke it, and an elaboration test of the whole
+  SoC now runs in the default suite. Four-core clusters generate (coherent L1s, 128 KiB L2), and the
+  device tree is generated for N harts.
+
 ## 2026-10-06 (night): Linux boots on the card
 
 - S5. The contract went to version 2: GUEST_RESET (cores held at power-up; the boot window into main
@@ -28,7 +60,7 @@ the path, including conclusions that turned out wrong, so nobody re-derives them
   drive, and they drop late responses instead of blocking the arbiter (a simulation test resets the
   guest mid-boot twice). On the card (rebuilt: SoC 68 MHz, controller 148 MHz): `card up --load`, then
   `card reset` twice while membench streamed 512 MiB; each reload checked out and the guest came back.
-- `hw/card` wraps it: `card up` (load and warm-reboot only when needed, bind vfio-pci, boot),
+- `hw/card` wraps it: `card up` (load only when needed, bind vfio-pci, boot),
   `card console` (raw terminal over a Unix socket, Ctrl-] detaches), `card reset`. The initramfs has
   every BusyBox applet, static bash, top, membench.
 

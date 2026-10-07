@@ -21,31 +21,29 @@ case class LineWishbone(addressWidth: Int) extends Bundle with IMasterSlave {
   override def asMaster(): Unit = { out(cyc, stb, we, addr, wdata, sel); in(stall, ack, rdata) }
 }
 
-/** Line requests onto UberDDR3's Wishbone port, one at a time; a write is answered once acknowledged. */
-case class LinesToWishbone(addressWidth: Int) extends Component {
+/** Line requests onto UberDDR3's pipelined Wishbone port, up to `depth` in flight: a request is issued
+  * whenever the controller does not stall, and its answers (in order; a write is answered once
+  * acknowledged) wait in a FIFO that credits keep from overflowing. */
+case class LinesToWishbone(addressWidth: Int, depth: Int = 8) extends Component {
   val io = new Bundle {
     val cmd = slave(Stream(MemCmd()))
     val rsp = master(Stream(Bits(8 * Message.Size bits)))
     val wb = master(LineWishbone(addressWidth))
   }
-  val issuing = Reg(Bool()) init False
-  val waiting = Reg(Bool()) init False
-  val rspValid = Reg(Bool()) init False
-  val rspData = Reg(Bits(8 * Message.Size bits))
-  io.cmd.ready := !issuing && !waiting && !rspValid
-  val cmd = RegNextWhen(io.cmd.payload, io.cmd.fire)
-  when(io.cmd.fire) { issuing := True }
+  val answers = StreamFifo(Bits(8 * Message.Size bits), depth)
+  val pending = Reg(UInt(log2Up(depth + 1) bits)) init 0 // issued or waiting to issue, not yet taken
+  val stage = io.cmd.haltWhen(pending === depth).m2sPipe()
   io.wb.cyc := True
-  io.wb.stb := issuing
-  io.wb.we := cmd.write
-  io.wb.addr := (cmd.address >> log2Up(Message.Size)).resized
-  io.wb.wdata := cmd.data
-  io.wb.sel := cmd.mask
-  when(issuing && !io.wb.stall) { issuing := False; waiting := True }
-  when(waiting && io.wb.ack) { waiting := False; rspValid := True; rspData := io.wb.rdata }
-  io.rsp.valid := rspValid
-  io.rsp.payload := rspData
-  when(io.rsp.fire) { rspValid := False }
+  io.wb.stb := stage.valid
+  io.wb.we := stage.write
+  io.wb.addr := (stage.address >> log2Up(Message.Size)).resized
+  io.wb.wdata := stage.data
+  io.wb.sel := stage.mask
+  stage.ready := !io.wb.stall
+  answers.io.push.valid := io.wb.ack
+  answers.io.push.payload := io.wb.rdata
+  io.rsp << answers.io.pop
+  pending := pending + U(io.cmd.fire) - U(io.rsp.fire)
 }
 
 case class CardS5(clusterRtl: String, wbAddressWidth: Int = 25) extends Component {
@@ -69,18 +67,25 @@ case class CardS5(clusterRtl: String, wbAddressWidth: Int = 25) extends Componen
   core.io.completerId := BufferCC(io.completerId)
   core.io.busMaster := BufferCC(io.busMaster)
   core.io.ramReady := BufferCC(io.ramReady, False)
+  core.io.linkReset := BufferCC(io.pcieReset, True) // a host that resets the link is starting over
   io.guestReset := core.io.guestReset
 
-  // the hard block's stream: registered at the pins, then across
+  // the hard block's stream: registered at the pins (reset with the hard block), then across. The crossing
+  // FIFOs are reset only with the SoC, on both sides: a link reset that cleared just one side's pointers
+  // would make the other side read stale entries as new TLPs.
+  val pcieStableCd = ClockDomain(io.pcieClk, ResetCtrl.asyncAssertSyncDeassert(socCd.readResetWire, ClockDomain(io.pcieClk)))
   val rxPins = pcieCd(io.rx.m2sPipe())
-  core.io.rx << rxPins.queue(16, pcieCd, socCd)
-  val txCross = core.io.tx.queue(16, socCd, pcieCd)
-  io.tx << pcieCd(txCross.s2mPipe().m2sPipe())
+  val rxCross = StreamFifoCC(Fragment(Axis64()), 16, pcieStableCd, socCd)
+  rxCross.io.push << rxPins
+  core.io.rx << rxCross.io.pop
+  val txCross = StreamFifoCC(Fragment(Axis64()), 16, socCd, pcieStableCd)
+  txCross.io.push << core.io.tx
+  io.tx << pcieCd(txCross.io.pop.s2mPipe().m2sPipe())
 
   // main memory: across to the controller's clock and onto its Wishbone port
   val wb = ddrCd(LinesToWishbone(wbAddressWidth))
-  wb.io.cmd << core.io.ram.queue(4, socCd, ddrCd)
-  core.io.ramRsp << wb.io.rsp.queue(4, ddrCd, socCd)
+  wb.io.cmd << core.io.ram.queue(8, socCd, ddrCd)
+  core.io.ramRsp << wb.io.rsp.queue(8, ddrCd, socCd)
   io.wb <> wb.io.wb
 }
 

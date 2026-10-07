@@ -18,8 +18,7 @@ builds Gen2, which does not meet timing yet.
 
 ```text
 FREQ=62.5 fpga build designs/soc-s4 soc_s4        # on buzz; needs sbt and a JDK
-fpga load designs/soc-s4/build/soc_s4.bit
-ssh dino sudo systemctl reboot                     # warm reboot: the BIOS enumerates the new endpoint
+fpga pcie-cycle designs/soc-s4/build/soc_s4.bit     # load; the card leaves the bus and is rescanned
 # on dino:
 sudo modprobe vfio-pci
 echo vfio-pci | sudo tee /sys/bus/pci/devices/0000:04:00.0/driver_override

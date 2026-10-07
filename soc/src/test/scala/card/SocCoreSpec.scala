@@ -54,6 +54,37 @@ class SocCoreSpec extends AnyFunSuite {
     Some((0 until n).map(i => ((rec >> (8 * (l.field("data").offset + i))) & 0xff).toChar).mkString)
   }
 
+  // S7: four harts with coherent caches and a shared L2 (soc/vexii-cluster.sh tmp/vexii4 4, and
+  // CARD_HARTS=4 linux/build-opensbi.sh ../soc/tmp/sw4). Slow: runs when SOC_SMP=1.
+  test("four harts: OpenSBI finds them all and reaches its payload") {
+    val cluster4 = "tmp/vexii4/VexiiCluster.v"; val firmware4 = "tmp/sw4/fw_payload.bin"
+    val wanted = sys.env.contains("SOC_SMP") // a plain Boolean: assume() prints the operands of an expression
+    val built = Files.exists(Paths.get(cluster4)) && Files.exists(Paths.get(firmware4))
+    assume(wanted && built,
+      "set SOC_SMP=1 after generating tmp/vexii4 and tmp/sw4")
+    SimConfig.withConfig(SpinalConfig(targetDirectory = "tmp")).addSimulatorFlag("--x-assign 0")
+      .addSimulatorFlag("--x-initial 0").compile(SocCore(cluster4)).doSim { dut =>
+      dut.clockDomain.assertReset()
+      dut.io.completerId #= CardId
+      dut.io.busMaster #= true
+      dut.io.ramReady #= true
+      dut.io.linkReset #= false
+      dut.clockDomain.forkStimulus(10)
+      val host = new TlpHost(dut.io.rx, dut.io.tx, dut.clockDomain, BigInt("40000000", 16), BigInt("50000000", 16))
+      val ram = new Ram(dut)
+      ram.load(0, Files.readAllBytes(Paths.get(firmware4)))
+      dut.clockDomain.waitSampling(20)
+      host.setUp()
+      host.hostWrite(Bar0.reg("GUEST_RESET"), 0)
+      val out = new StringBuilder
+      while (!out.toString.contains("Test payload running") && simTime() < 10 * 60000000L)
+        host.takeRecord(10000).foreach { r => console(r).foreach { s => out ++= s; print(s.replace("\r", "")) } }
+      println(s"\n[${simTime() / 10} cycles, ${ram.reads} line reads, ${ram.writes} line writes]")
+      assert(out.toString.contains("Platform HART Count         : 4"), "OpenSBI did not find four harts")
+      assert(out.toString.contains("Test payload running"), "OpenSBI did not reach its payload")
+    }
+  }
+
   test("a GUEST_RESET in the middle of a boot leaves the SoC bootable") {
     assume(Files.exists(Paths.get(cluster)) && Files.exists(Paths.get(firmware)))
     compiled.doSim { dut =>
@@ -61,6 +92,7 @@ class SocCoreSpec extends AnyFunSuite {
       dut.io.completerId #= CardId
       dut.io.busMaster #= true
       dut.io.ramReady #= true
+      dut.io.linkReset #= false
       dut.clockDomain.forkStimulus(10)
       val host = new TlpHost(dut.io.rx, dut.io.tx, dut.clockDomain, BigInt("40000000", 16), BigInt("50000000", 16))
       val ram = new Ram(dut)
@@ -95,6 +127,7 @@ class SocCoreSpec extends AnyFunSuite {
       dut.io.completerId #= CardId
       dut.io.busMaster #= true
       dut.io.ramReady #= true
+      dut.io.linkReset #= false
       dut.clockDomain.forkStimulus(10)
       val host = new TlpHost(dut.io.rx, dut.io.tx, dut.clockDomain, BigInt("40000000", 16), BigInt("50000000", 16))
       val ram = new Ram(dut)

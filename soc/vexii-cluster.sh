@@ -16,7 +16,10 @@ core="--xlen=64 --with-isa=m,a,c,f,d,s,u,zicntr,zihpm --with-fetch-l1 --with-lsu
       --fpu-ignore-subnormal --with-btb --with-ras --with-gshare --regfile-sync"
 # Devices sit in 0x1000_0000-0x1fff_ffff (the 16550 and the virtio slots): a device region must not
 # cover the cluster's own CLINT and PLIC, or their accesses decode twice.
-soc="--reset-vector=2147483648 --cpu-count=$cores --litedram-width=64
+# More than one core: coherent data caches and a shared L2 (VEXII_L2_BYTES, default 128 KiB, VEXII_L2_WAYS 8), as LiteX's
+# multi-core "debian" configuration
+smp=; [[ $cores -gt 1 ]] && smp="--lsu-l1-coherency --l2-bytes=${VEXII_L2_BYTES:-131072} --l2-ways=${VEXII_L2_WAYS:-8}"
+soc="$smp --reset-vector=2147483648 --cpu-count=$cores --litedram-width=64
      --device-region clint=0x2000000 --device-region plic=0xc000000
      --memory-region=2147483648,2147483648,rwxc,m --memory-region=268435456,268435456,rw,p"
 cd "$src"

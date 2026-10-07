@@ -50,6 +50,7 @@ case class CardS4() extends Component {
   link.io.guest.address := 0
   link.io.guest.wdata := 0
   link.io.ramReady := True // block RAM
+  link.io.linkReset := False // the whole card is in the hard block's clock domain and its reset
   link.io.uart.valid := False
   link.io.uart.write := False
   link.io.uart.address := 0

@@ -113,6 +113,7 @@ object Generate {
        |    pub const OUTSIDE_WINDOW: u16 = ${Contract.CopyStatus.OutsideWindow};
        |    pub const BAD_LENGTH: u16 = ${Contract.CopyStatus.BadLength};
        |    pub const MISALIGNED: u16 = ${Contract.CopyStatus.Misaligned};
+       |    pub const HOST_READ_FAILED: u16 = ${Contract.CopyStatus.HostReadFailed};
        |}
        |
        |/// The DMA windows (base, size) a guest range in a copy or a used ring must lie wholly inside.

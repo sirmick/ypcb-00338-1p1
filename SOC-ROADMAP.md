@@ -143,15 +143,14 @@ memory, cardd's VFIO module, DMA both ways and the latency measurements.
 traffic); DDR3 behind the link (S5, where the guest's memory needs it); a fabric cycle counter for
 latency (the host-side numbers above include the host's own overheads).
 
-Run it: build `designs/soc-s4`, load it, warm-reboot dino, bind the card to vfio-pci, then
+Run it: build `designs/soc-s4`, `fpga pcie-cycle` it, bind the card to vfio-pci, then
 `sudo ./s4 0000:04:00.0` ([designs/soc-s4/README.md](designs/soc-s4/README.md)).
 
 
 **Proof:** a bitstream with `pcie_7x`, DDR3 and the mailbox: `cardd` opens it through VFIO, rings
 doorbells and receives MSI; **the card writes records into pinned host memory** (bus mastering,
 not yet proven by gate 8, which tested host-to-card BAR access only); doorbell, interrupt and
-inbox round trips measured with a fabric cycle counter. Note dino's quirk: load the bitstream, then
-warm-reboot so the BIOS enumerates the card.
+inbox round trips measured with a fabric cycle counter.
 
 ## S5: one core boots Linux
 

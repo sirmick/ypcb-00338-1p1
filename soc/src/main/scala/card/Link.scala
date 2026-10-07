@@ -35,6 +35,12 @@ case class HostWrite() extends Bundle {
   val mask = Bits(Message.Size bits)
 }
 
+/** A line read from host staging, or the news that the read failed (an error completion, or none). */
+case class HostReadRsp() extends Bundle {
+  val data = Bits(8 * Message.Size bits)
+  val failed = Bool()
+}
+
 /** A request on the card's guest-memory port (DDR3 channel B and the ring region): one 64-byte
   * line, `address` 64-byte aligned. Every request gets one response, data for a read. */
 case class MemCmd() extends Bundle {
@@ -236,9 +242,13 @@ case class HostLink(slots: Int) extends Component {
     val usedAdvance = Vec(master(Flow(UInt(log2Up(V.QueuesPerSlot) bits))), slots)
     val hostWrite = master(Stream(HostWrite()))
     val hostRead = master(Stream(UInt(64 bits)))
-    val hostReadRsp = slave(Stream(Bits(8 * Message.Size bits)))
+    val hostReadRsp = slave(Stream(HostReadRsp()))
     val mem = master(Stream(MemCmd()))
     val memRsp = slave(Stream(Bits(8 * Message.Size bits)))
+    /** the PCIe link was reset: the host is starting over (the card stops writing, as ENABLE 0) */
+    val linkReset = in Bool ()
+    /** a command in flight was abandoned (a new session, or a link reset): forget any read outstanding */
+    val abort = out Bool ()
     /** CONSOLE_TX record bodies from the 16550; dropped while the card is not enabled */
     val consoleTx = slave(Stream(Bits(8 * Message.Size bits)))
     /** CONSOLE_RX's bytes, one per clock */
@@ -297,6 +307,11 @@ case class HostLink(slots: Int) extends Component {
   // or acknowledgements from the last session are forgotten
   val restart = write && a === r("ENABLE") && io.host.wdata(0) && !enable
   when(restart) { cmdProduced := 0; inboxConsumed := 0; refused := False }
+  when(io.linkReset) { enable := False }
+  // a new session or a link reset abandons the command in flight: a read of host memory that will never
+  // be answered must not hold the card forever
+  val abort = restart || io.linkReset
+  io.abort := abort
   val inRing = a >= Bar0.CmdRing && a < Bar0.CmdRing + entries * Message.Size
   ring.write((a - Bar0.CmdRing)(log2Up(entries * Message.Size) - 1 downto 2), io.host.wdata, write && inRing)
   val progOffset = a - Bar0.SlotProgBase
@@ -391,6 +406,9 @@ case class HostLink(slots: Int) extends Component {
   io.mem.payload.data := lineData
   io.mem.payload.mask := copyMask
   io.memRsp.ready := False
+  val memInFlight = Reg(Bool()) init False // one request on the memory port awaits its answer
+  when(io.mem.fire) { memInFlight := True }
+  when(io.memRsp.fire) { memInFlight := False }
 
   // used-ring writes: a pattern repeated in every 8-byte lane, and a mask that picks the bytes
   def lanes(v: Bits): Bits = Cat(Seq.fill(Message.Size / 8)(v))
@@ -406,7 +424,11 @@ case class HostLink(slots: Int) extends Component {
   }
   val state = Reg(S()) init S.IDLE
   switch(state) {
-    is(S.IDLE) { word := 0; when(enable && waiting) { state := S.READ } }
+    is(S.IDLE) {
+      word := 0
+      io.memRsp.ready := True // drains the answer to a request an abandoned command made
+      when(enable && waiting && !memInFlight) { state := S.READ }
+    }
     is(S.READ) {
       // readSync returns the word addressed in the previous cycle
       when(word =/= 0) { bufWords((word - 1).resize(log2Up(wordsPerMsg) bits)) := readData }
@@ -469,7 +491,13 @@ case class HostLink(slots: Int) extends Component {
       when(copyWrite.ready) { when(isLast) { state := S.DONE } otherwise { line := line + Message.Size; state := S.C2H_READ } }
     }
     is(S.H2C_REQ) { io.hostRead.valid := True; when(io.hostRead.ready) { state := S.H2C_WAIT } }
-    is(S.H2C_WAIT) { io.hostReadRsp.ready := True; when(io.hostReadRsp.valid) { lineData := io.hostReadRsp.payload; state := S.H2C_WRITE } }
+    is(S.H2C_WAIT) {
+      io.hostReadRsp.ready := True
+      when(io.hostReadRsp.valid) {
+        lineData := io.hostReadRsp.payload.data
+        when(io.hostReadRsp.payload.failed) { copyStatus := Contract.CopyStatus.HostReadFailed; state := S.DONE } otherwise { state := S.H2C_WRITE }
+      }
+    }
     is(S.H2C_WRITE) { io.mem.valid := True; io.mem.payload.write := True; when(io.mem.ready) { state := S.H2C_ACK } }
     is(S.H2C_ACK) {
       io.memRsp.ready := True
@@ -534,6 +562,7 @@ case class HostLink(slots: Int) extends Component {
     is(S.ACK) { ack.valid := True; when(ack.ready) { state := S.IDLE } }
   }
   when(restart) { cmdNext := 1 }
+  when(abort) { state := S.IDLE }
 
   // ---- the inbox writer: one stream of records, numbered 1, 2, 3, ..., never overrunning the host ----
   val console = io.consoleTx.throwWhen(!enable) // nobody is listening: the guest's console must not block
@@ -569,9 +598,11 @@ case class CardLink(slots: Int = Contract.Map.VirtioSlots) extends Component {
     val host = slave(RegBus(16))
     val hostWrite = master(Stream(HostWrite()))
     val hostRead = master(Stream(UInt(64 bits)))
-    val hostReadRsp = slave(Stream(Bits(8 * Message.Size bits)))
+    val hostReadRsp = slave(Stream(HostReadRsp()))
     val mem = master(Stream(MemCmd()))
     val memRsp = slave(Stream(Bits(8 * Message.Size bits)))
+    val linkReset = in Bool ()
+    val abort = out Bool ()
     val irq = out Bits (slots bits)
     /** the 16550 (register index 0-7) and its interrupt */
     val uart = slave(RegBus(3))
@@ -588,6 +619,8 @@ case class CardLink(slots: Int = Contract.Map.VirtioSlots) extends Component {
   io.hostWrite << link.io.hostWrite
   io.hostRead << link.io.hostRead
   link.io.hostReadRsp << io.hostReadRsp
+  link.io.linkReset := io.linkReset
+  io.abort := link.io.abort
   io.mem << link.io.mem
   link.io.memRsp << io.memRsp
   link.io.consoleTx << uart.io.records

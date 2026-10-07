@@ -57,7 +57,7 @@ a copy command finished.
 | Offset | Field | Bytes | |
 |---|---|---|---|
 | 8 | `tag` | 4 |  |
-| 12 | `status` | 2 | 0 done; 1 outside the DMA windows; 2 bad length or outside staging; 3 misaligned |
+| 12 | `status` | 2 | 0 done; 1 outside the DMA windows; 2 bad length or outside staging; 3 misaligned; 4 a read of host staging failed or timed out (the copy stopped part way) |
 
 ### CONSOLE_TX (kind 6)
 

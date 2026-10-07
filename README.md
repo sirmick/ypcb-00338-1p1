@@ -71,8 +71,8 @@ fpga help
 ```
 
 [`card`](card) runs the guest SoC (SOC-ROADMAP S5): `card up` loads designs/soc-s5 if needed and boots
-OpenSBI and Linux, `card console` attaches your terminal to the guest's console (Ctrl-] detaches),
-`card reset` reboots the guest.
+OpenSBI and Linux, `card console` attaches your terminal to the guest's console (Ctrl-] then `r`
+resets the guest while you watch it boot, Ctrl-] then `q` detaches), `card reset` reboots the guest.
 
 [`bmc`](bmc) drives the card host's BMC over the LAN (power state, power on, a power cycle), the way
 back in when that host is hung or off.

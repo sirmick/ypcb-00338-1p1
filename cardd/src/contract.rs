@@ -153,6 +153,7 @@ pub mod copy_status {
     pub const OUTSIDE_WINDOW: u16 = 1;
     pub const BAD_LENGTH: u16 = 2;
     pub const MISALIGNED: u16 = 3;
+    pub const HOST_READ_FAILED: u16 = 4;
 }
 
 /// The DMA windows (base, size) a guest range in a copy or a used ring must lie wholly inside.

@@ -33,33 +33,33 @@ object SocCore {
     useCache = false, useQos = false, useProt = false)
 }
 
-/** Requests from several masters onto one line port, one at a time: each request's response goes back to
-  * the master that made it. */
-case class LineArbiter(n: Int) extends Component {
+/** Requests from several masters onto one line port, round-robin, with up to `depth` in flight. The line
+  * port answers in order, so a FIFO of who asked routes each response back to the master that made it. */
+case class LineArbiter(n: Int, depth: Int = 8) extends Component {
   val io = new Bundle {
     val up = Vec(slave(Stream(MemCmd())), n)
     val upRsp = Vec(master(Stream(Bits(8 * Message.Size bits))), n)
     val down = master(Stream(MemCmd()))
     val downRsp = slave(Stream(Bits(8 * Message.Size bits)))
   }
-  val busy = Reg(Bool()) init False
-  val owner = Reg(UInt(log2Up(n) bits)) init 0
-  val pick = OHToUInt(OHMasking.first(Vec(io.up.map(_.valid)).asBits)) // the lowest-numbered master first
-  io.down.valid := False
-  io.down.payload := io.up(pick).payload
-  for ((u, i) <- io.up.zipWithIndex) u.ready := !busy && io.down.ready && pick === i
-  when(!busy && io.up.map(_.valid).reduce(_ || _)) {
-    io.down.valid := True
-    when(io.down.ready) { busy := True; owner := pick }
-  }
-  for ((r, i) <- io.upRsp.zipWithIndex) { r.valid := io.downRsp.valid && busy && owner === i; r.payload := io.downRsp.payload }
-  io.downRsp.ready := busy && io.upRsp(owner).ready
-  when(io.downRsp.fire) { busy := False }
+  val arbiter = StreamArbiterFactory().roundRobin.noLock.build(MemCmd(), n)
+  (arbiter.io.inputs, io.up).zipped.foreach(_ << _)
+  val order = StreamFifo(UInt(log2Up(n) bits), depth)
+  val (toDown, toOrder) = StreamFork2(arbiter.io.output, synchronous = true)
+  io.down << toDown
+  order.io.push << toOrder.translateWith(arbiter.io.chosen)
+  val owner = order.io.pop.payload
+  for ((r, i) <- io.upRsp.zipWithIndex) { r.valid := io.downRsp.valid && order.io.pop.valid && owner === i; r.payload := io.downRsp.payload }
+  io.downRsp.ready := order.io.pop.valid && io.upRsp(owner).ready
+  order.io.pop.ready := io.downRsp.fire
 }
 
-/** The cores' AXI4 memory port as 64-byte line accesses: a read fetches each line its burst touches
-  * once; a write gathers the beats of a line into one masked line write. One transaction at a time. */
-case class Axi4ToLines(cfg: Axi4Config, base: BigInt) extends Component {
+/** The cores' AXI4 memory port as 64-byte line accesses, with several in flight. Reads: bursts queue up,
+  * an issuer sends a line read for every line each burst touches (as far ahead as there is room for the
+  * answers), and a deliverer turns the answers, in order, into the bursts' beats. Writes: the beats of a
+  * line gather into one masked line write; a burst's B response goes back once its last line write is
+  * answered. INCR bursts of any size and alignment; responses in AXI order (the same as request order). */
+case class Axi4ToLines(cfg: Axi4Config, base: BigInt, depth: Int = 4) extends Component {
   val io = new Bundle {
     val axi = slave(Axi4(cfg))
     val read = master(Stream(MemCmd()))
@@ -69,87 +69,111 @@ case class Axi4ToLines(cfg: Axi4Config, base: BigInt) extends Component {
   }
   private val lineBits = log2Up(Message.Size)
   private val wordBits = log2Up(cfg.bytePerWord)
+  private val aw = cfg.addressWidth
   private def lineOf(a: UInt): UInt = (a.resize(64 bits) - base)(63 downto lineBits) @@ U(0, lineBits bits)
-  private def sameLine(a: UInt, b: UInt) = a(cfg.addressWidth - 1 downto lineBits) === b(cfg.addressWidth - 1 downto lineBits)
+  private def lineIndex(a: UInt): UInt = a(aw - 1 downto lineBits)
+  case class Burst() extends Bundle {
+    val addr = UInt(aw bits)
+    val len = UInt(8 bits)
+    val size = UInt(3 bits)
+    val id = UInt(cfg.idWidth bits)
+    def last: UInt = addr + ((len.resize(aw bits) + 1) |<< size) - 1 // the burst's last byte
+  }
+  private def burstOf(a: Axi4Ax): Burst = { val b = Burst(); b.addr := a.addr; b.len := a.len; b.size := a.size; b.id := a.id; b }
 
   val rd = new Area {
-    val active = Reg(Bool()) init False
-    val have = Reg(Bool()) init False // the line holding addr is in buf
-    val waiting = Reg(Bool()) init False
-    val addr = Reg(UInt(cfg.addressWidth bits))
-    val id = Reg(UInt(cfg.idWidth bits))
-    val left = Reg(UInt(8 bits))
-    val size = Reg(UInt(3 bits))
-    val buf = Reg(Bits(8 * Message.Size bits))
-    io.axi.ar.ready := !active
-    when(io.axi.ar.fire) {
-      active := True; have := False; addr := io.axi.ar.addr; id := io.axi.ar.id; left := io.axi.ar.len; size := io.axi.ar.size
-    }
-    io.read.valid := active && !have && !waiting
+    val bursts = io.axi.ar.translateWith(burstOf(io.axi.ar.payload)).queue(depth)
+    val (toIssue, toDeliver) = StreamFork2(bursts)
+    // the issuer: a line read for each line of the burst at its head
+    val line = Reg(UInt(aw - lineBits bits))
+    val started = Reg(Bool()) init False
+    val inFlight = Reg(UInt(log2Up(depth + 1) bits)) init 0 // line reads not yet consumed by the deliverer
+    val answers = StreamFifo(Bits(8 * Message.Size bits), depth)
+    val cur = started ? line | lineIndex(toIssue.addr)
+    val lastLine = lineIndex(toIssue.payload.last)
+    io.read.valid := toIssue.valid && inFlight =/= depth
     io.read.payload.write := False
-    io.read.payload.address := lineOf(addr)
+    io.read.payload.address := lineOf(cur @@ U(0, lineBits bits))
     io.read.payload.data := 0
     io.read.payload.mask := 0
-    when(io.read.fire) { waiting := True }
-    io.readRsp.ready := True // a response that arrives after a guest reset is dropped, never left blocking the arbiter
-    when(io.readRsp.fire && waiting) { buf := io.readRsp.payload; have := True; waiting := False }
-    io.axi.r.valid := active && have
-    io.axi.r.data := buf.subdivideIn(cfg.dataWidth bits)(addr(lineBits - 1 downto wordBits))
-    io.axi.r.id := id
+    toIssue.ready := io.read.fire && cur === lastLine
+    when(io.read.fire) { line := cur + 1; started := cur =/= lastLine }
+    answers.io.push << io.readRsp
+    // the deliverer: beats from the answers, in order
+    val beats = toDeliver.queue(depth)
+    val addr = Reg(UInt(aw bits))
+    val left = Reg(UInt(8 bits))
+    val busy = Reg(Bool()) init False
+    val a = busy ? addr | beats.addr
+    val l = busy ? left | beats.len
+    val next = a + (U(1, aw bits) |<< beats.size)
+    io.axi.r.valid := beats.valid && answers.io.pop.valid
+    io.axi.r.data := answers.io.pop.payload.subdivideIn(cfg.dataWidth bits)(a(lineBits - 1 downto wordBits))
+    io.axi.r.id := beats.id
     io.axi.r.resp := 0
-    io.axi.r.last := left === 0
-    when(io.axi.r.fire) {
-      val next = addr + (U(1, cfg.addressWidth bits) |<< size)
-      addr := next
-      left := left - 1
-      when(left === 0) { active := False } elsewhen (!sameLine(addr, next)) { have := False }
-    }
+    io.axi.r.last := l === 0
+    val lineDone = l === 0 || lineIndex(next) =/= lineIndex(a)
+    answers.io.pop.ready := io.axi.r.fire && lineDone
+    beats.ready := io.axi.r.fire && l === 0
+    when(io.axi.r.fire) { addr := next; left := l - 1; busy := l =/= 0 }
+    inFlight := inFlight + U(io.read.fire) - U(answers.io.pop.fire)
   }
 
   val wr = new Area {
-    val active = Reg(Bool()) init False
-    val flushing = Reg(Bool()) init False // a gathered line is being written
-    val waiting = Reg(Bool()) init False
-    val last = Reg(Bool()) init False
-    val respond = Reg(Bool()) init False
-    val addr = Reg(UInt(cfg.addressWidth bits))
-    val line = Reg(UInt(64 bits))
-    val id = Reg(UInt(cfg.idWidth bits))
-    val size = Reg(UInt(3 bits))
+    val bursts = io.axi.aw.translateWith(burstOf(io.axi.aw.payload)).queue(depth)
+    val addr = Reg(UInt(aw bits))
+    val busy = Reg(Bool()) init False
     val data = Reg(Bits(8 * Message.Size bits))
     val mask = Reg(Bits(Message.Size bits)) init 0
-    io.axi.aw.ready := !active
-    when(io.axi.aw.fire) { active := True; addr := io.axi.aw.addr; id := io.axi.aw.id; size := io.axi.aw.size; mask := 0 }
-    io.axi.w.ready := active && !flushing && !respond
+    val a = busy ? addr | bursts.addr
+    val next = a + (U(1, aw bits) |<< bursts.size)
+    // a gathered line, waiting to go out; whether it ends its burst (and the burst's id)
+    case class LineWrite() extends Bundle { val cmd = MemCmd(); val last = Bool(); val id = UInt(cfg.idWidth bits) }
+    val out = Stream(LineWrite())
+    val outQ = out.queue(2)
+    io.axi.w.ready := bursts.valid && out.ready
+    out.valid := False
+    out.payload.cmd.write := True
+    out.payload.cmd.address := lineOf(a)
+    out.payload.cmd.data := data
+    out.payload.cmd.mask := mask
+    out.payload.last := io.axi.w.last
+    out.payload.id := bursts.id
+    bursts.ready := False
     when(io.axi.w.fire) {
-      val word = addr(lineBits - 1 downto wordBits)
-      val next = addr + (U(1, cfg.addressWidth bits) |<< size)
+      val word = a(lineBits - 1 downto wordBits)
+      val d = Bits(8 * Message.Size bits); val m = Bits(Message.Size bits)
+      d := data; m := mask
       for (k <- 0 until Message.Size / cfg.bytePerWord) when(word === k) {
         for (b <- 0 until cfg.bytePerWord) when(io.axi.w.strb(b)) {
-          data(8 * (k * cfg.bytePerWord + b), 8 bits) := io.axi.w.data(8 * b, 8 bits)
-          mask(k * cfg.bytePerWord + b) := True
+          d(8 * (k * cfg.bytePerWord + b), 8 bits) := io.axi.w.data(8 * b, 8 bits)
+          m(k * cfg.bytePerWord + b) := True
         }
       }
-      line := lineOf(addr)
+      val flush = io.axi.w.last || lineIndex(next) =/= lineIndex(a)
+      out.payload.cmd.data := d
+      out.payload.cmd.mask := m
+      out.valid := flush
+      data := d
+      mask := flush ? B(0, Message.Size bits) | m
       addr := next
-      last := io.axi.w.last
-      when(io.axi.w.last || !sameLine(addr, next)) { flushing := True }
+      busy := !io.axi.w.last
+      bursts.ready := io.axi.w.last
     }
-    io.write.valid := flushing && !waiting
-    io.write.payload.write := True
-    io.write.payload.address := line
-    io.write.payload.data := data
-    io.write.payload.mask := mask
-    when(io.write.fire) { waiting := True }
-    io.writeRsp.ready := True
-    when(io.writeRsp.fire && waiting) {
-      waiting := False; flushing := False; mask := 0
-      when(last) { respond := True }
-    }
-    io.axi.b.valid := respond
-    io.axi.b.id := id
+    // line writes go out; their answers come back in order; a burst's last answer releases its B
+    val (toMem, toTrack) = StreamFork2(outQ, synchronous = true)
+    io.write << toMem.translateWith(toMem.cmd).m2sPipe() // registered: the fork's valid waits on both readies
+    val track = toTrack.queue(depth)
+    io.writeRsp.ready := track.valid
+    track.ready := io.writeRsp.fire
+    val b = Stream(UInt(cfg.idWidth bits))
+    b.valid := io.writeRsp.fire && track.last
+    b.payload := track.id
+    val bQ = b.queue(depth)
+    io.axi.b.valid := bQ.valid
+    io.axi.b.id := bQ.payload
     io.axi.b.resp := 0
-    when(io.axi.b.fire) { respond := False; active := False }
+    bQ.ready := io.axi.b.ready
   }
 }
 
@@ -207,9 +231,12 @@ case class SocCore(clusterRtl: String, slots: Int = M.VirtioSlots) extends Compo
     val ramRsp = slave(Stream(Bits(8 * Message.Size bits)))
     val guestReset = out Bool ()
     val ramReady = in Bool ()
+    /** the hard block is in reset: the host link starts over (the guest is not touched) */
+    val linkReset = in Bool ()
   }
   val link = PcieLink(slots)
   link.io.ramReady := io.ramReady
+  link.io.linkReset := io.linkReset
   link.io.rx << io.rx
   io.tx << link.io.tx
   link.io.completerId := io.completerId

@@ -32,7 +32,9 @@ object Tlp {
   def swap(d: Bits): Bits = EndiannessSwap(d)
 }
 
-case class PcieLink(slots: Int = Contract.Map.VirtioSlots) extends Component {
+/** `completionTimeout`: clock cycles to wait for the answer to a read of host memory (PCIe allows tens
+  * of milliseconds; the default is about 84 ms at 50 MHz). */
+case class PcieLink(slots: Int = Contract.Map.VirtioSlots, completionTimeout: Int = 1 << 22) extends Component {
   val io = new Bundle {
     val rx = slave(Stream(Fragment(Axis64())))
     val tx = master(Stream(Fragment(Axis64())))
@@ -48,8 +50,11 @@ case class PcieLink(slots: Int = Contract.Map.VirtioSlots) extends Component {
     val uartIrq = out Bool ()
     val guestReset = out Bool ()
     val ramReady = in Bool ()
+    /** the hard block is in reset (the host reset the link, or is rebooting) */
+    val linkReset = in Bool ()
   }
   val link = CardLink(slots)
+  link.io.linkReset := io.linkReset
   link.io.ramReady := io.ramReady
   link.io.uart <> io.uart
   io.uartIrq := link.io.uartIrq
@@ -91,13 +96,24 @@ case class PcieLink(slots: Int = Contract.Map.VirtioSlots) extends Component {
   val cplDws = Vec.fill(4)(Reg(Bits(32 bits)))
   val cplPending = Reg(Bool()) init False
 
-  // the requester's read: one MemRd outstanding, answered by one CplD of 16 DWs
+  // the requester's read: one MemRd outstanding, answered by one CplD of 16 DWs. Each read carries a new
+  // tag, so the late answer to a read given up on (timed out, or abandoned by a new session) is ignored.
+  // An error completion (no data: the IOMMU blocked the read, say) or none within the timeout fails it.
   val rdPending = Reg(Bool()) init False
   val rdLine = Reg(Bits(8 * Message.Size bits))
   val rdDone = Reg(Bool()) init False
+  val rdFailed = Reg(Bool()) init False
+  val rdTag = Reg(UInt(8 bits)) init 0
+  val rdWait = Reg(UInt(log2Up(completionTimeout + 1) bits)) init 0
   link.io.hostReadRsp.valid := rdDone
-  link.io.hostReadRsp.payload := rdLine
+  link.io.hostReadRsp.payload.data := rdLine
+  link.io.hostReadRsp.payload.failed := rdFailed
   when(link.io.hostReadRsp.fire) { rdDone := False }
+  def endRead(failed: Bool): Unit = { rdPending := False; rdDone := True; rdFailed := failed; rdTag := rdTag + 1 }
+  when(rdPending) { rdWait := rdWait + 1 } otherwise { rdWait := 0 }
+  when(rdPending && rdWait === completionTimeout) { endRead(True) }
+  val cplStatus = dw1(15 downto 13)
+  val cplTag = dw2(15 downto 8).asUInt
 
   def finishRx(): Unit = { rxFull := False; rxCount := 0; rxOverflow := False; wrIndex := 0 }
   when(rxFull) {
@@ -125,11 +141,10 @@ case class PcieLink(slots: Int = Contract.Map.VirtioSlots) extends Component {
         cplPending := True
         finishRx()
       }
-    } elsewhen (fmtType === Tlp.CplD && rdPending) {
-      // the completion of our read: 16 data DWs after a 3-DW header
+    } elsewhen ((fmtType === Tlp.CplD || fmtType === Tlp.Cpl) && rdPending && cplTag === rdTag) {
+      // the completion of our read: 16 data DWs after a 3-DW header, or an error status and no data
       for (i <- 0 until 16) rdLine(32 * i + 31 downto 32 * i) := Tlp.swap(rxDws(3 + i))
-      rdPending := False
-      rdDone := True
+      endRead(fmtType =/= Tlp.CplD || cplStatus =/= 0 || lengthDw =/= 16)
       finishRx()
     } elsewhen (!(fmtType === Tlp.MRd32 || fmtType === Tlp.MRd64)) {
       finishRx() // anything else (messages, unexpected completions) is dropped
@@ -186,7 +201,7 @@ case class PcieLink(slots: Int = Contract.Map.VirtioSlots) extends Component {
       val a = link.io.hostRead.payload
       val r64 = a(63 downto 32) =/= 0
       txHdr(0) := B(r64 ? U(Tlp.MRd64, 8 bits) | U(Tlp.MRd32, 8 bits)) ## B(0, 14 bits) ## B(16, 10 bits)
-      txHdr(1) := reqId ## B(0, 8 bits) ## B(0xff, 8 bits)
+      txHdr(1) := reqId ## rdTag.asBits ## B(0xff, 8 bits)
       txHdr(2) := r64 ? a(63 downto 32).asBits | (a(31 downto 2) ## B(0, 2 bits))
       txHdr(3) := a(31 downto 2) ## B(0, 2 bits)
       txHdrDws := r64 ? U(4, 3 bits) | U(3, 3 bits)
@@ -217,4 +232,6 @@ case class PcieLink(slots: Int = Contract.Map.VirtioSlots) extends Component {
       src := Src.NONE
     }
   }
+  // a new session or a link reset: the read in flight is forgotten (its tag is retired)
+  when(link.io.abort) { rdPending := False; rdDone := False; rdTag := rdTag + 1 }
 }

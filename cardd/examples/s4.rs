@@ -54,6 +54,7 @@ fn main() {
     let dev = Device::open(bdf).unwrap_or_else(|e| panic!("{bdf}: {e}"));
     dev.enable_bus_master().expect("enabling bus master");
     let mut bar = dev.bar0().expect("mapping BAR0");
+    link::quiesce(&mut bar); // before any memory the card can reach is mapped
     let magic = bar.read32(bar0::reg::MAGIC);
     let version = bar.read32(bar0::reg::VERSION);
     println!("BAR0: magic {magic:#010x} (want {MAGIC:#010x}), version {version}, status {:#x}", bar.read32(bar0::reg::STATUS));

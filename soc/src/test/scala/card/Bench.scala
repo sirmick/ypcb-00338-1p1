@@ -39,6 +39,7 @@ class Bench(dut: CardLink) {
   dut.io.guest.valid #= false
   dut.io.uart.valid #= false
   dut.io.ramReady #= true
+  dut.io.linkReset #= false
   dut.io.host.valid #= false
   dut.clockDomain.forkStimulus(10)
   // the link and the memory accept at random moments, so back-pressure is exercised everywhere
@@ -51,7 +52,7 @@ class Bench(dut: CardLink) {
     if (a >= InboxBase && a < InboxBase + (L << 8)) records.enqueue((a, p.data.toBigInt))
   }
   StreamMonitor(dut.io.hostRead, dut.clockDomain) { p => hostRsp.enqueue(host.readLine(p.toBigInt)) }
-  StreamDriver(dut.io.hostReadRsp, dut.clockDomain) { p => if (hostRsp.nonEmpty) { p #= hostRsp.dequeue(); true } else false }
+  StreamDriver(dut.io.hostReadRsp, dut.clockDomain) { p => if (hostRsp.nonEmpty) { p.data #= hostRsp.dequeue(); p.failed #= false; true } else false }
   StreamMonitor(dut.io.mem, dut.clockDomain) { p =>
     val a = p.address.toBigInt
     assert(a % L == 0, "unaligned memory request")

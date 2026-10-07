@@ -15,7 +15,7 @@ the console on a Unix socket.
 
 ```text
 FREQ=50 fpga build designs/soc-s5 soc_s5     # on buzz, ~45 min (place and route ~42)
-card up                                      # loads it if needed (warm-rebooting dino), boots the guest
+card up                                      # loads it if needed (Linux re-enumerates it live), boots the guest
 card console                                 # Ctrl-] detaches
 ```
 

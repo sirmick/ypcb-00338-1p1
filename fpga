@@ -105,6 +105,10 @@ print(f"({len(rows)} samples over {t[-1]-t[0]} ms; all pins tri-stated means the
             f=$(abspath "$1"); T=300 xsdb_run "$S/load.xsdb.tcl" "$f" | grep -E "fpga:|right after"
             sleep 2; echo 1 | sudo -n tee /sys/bus/pci/rescan >/dev/null; sleep 1
             lspci -nn -d 10ee: || echo "no Xilinx device after rescan"
+            # a rescanned device starts with Memory Space Enable off: BAR0 reads all-ones until it is set
+            for d in /sys/bus/pci/devices/*; do
+                [[ $(<"$d/vendor") == 0x10ee ]] && sudo -n setpci -s "${d##*/}" COMMAND=2:2
+            done
             for d in /sys/bus/pci/devices/*; do
                 [[ $(<"$d/vendor") == 0x10ee ]] && echo "${d##*/}: link $(<"$d/current_link_speed") x$(<"$d/current_link_width")"
             done ;;

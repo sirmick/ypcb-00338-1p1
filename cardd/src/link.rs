@@ -25,6 +25,14 @@ impl From<Error> for LinkError {
     }
 }
 
+/// Stops the card writing into host memory, and returns once nothing it wrote earlier is still on the way:
+/// a read's completion cannot pass the card's earlier posted writes. Call it before mapping memory the
+/// card may reach, or a session left enabled by a host that died writes into the new one's inbox.
+pub fn quiesce(bar: &mut dyn Bar) {
+    bar.write32(bar0::reg::ENABLE, 0);
+    let _ = bar.read32(bar0::reg::STATUS);
+}
+
 /// Checks the card and points it at the host's inbox and staging, then enables it: a new session.
 pub fn set_up(bar: &mut dyn Bar, inbox: u64, inbox_log2: u32, staging: u64, staging_size: u32) -> Result<(), LinkError> {
     let magic = bar.read32(bar0::reg::MAGIC);
