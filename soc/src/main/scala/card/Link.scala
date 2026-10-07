@@ -281,6 +281,10 @@ case class HostLink(slots: Int) extends Component {
       is(r("ENABLE")) { enable := io.host.wdata(0) }
     }
   }
+  // enabling starts a new session: a restarted host begins both sequences at 1 again, and ring entries
+  // or acknowledgements from the last session are forgotten
+  val restart = write && a === r("ENABLE") && io.host.wdata(0) && !enable
+  when(restart) { cmdProduced := 0; inboxConsumed := 0; refused := False }
   val inRing = a >= Bar0.CmdRing && a < Bar0.CmdRing + entries * Message.Size
   ring.write((a - Bar0.CmdRing)(log2Up(entries * Message.Size) - 1 downto 2), io.host.wdata, write && inRing)
   val progOffset = a - Bar0.SlotProgBase
@@ -499,11 +503,12 @@ case class HostLink(slots: Int) extends Component {
     }
     is(S.ACK) { ack.valid := True; when(ack.ready) { state := S.IDLE } }
   }
+  when(restart) { cmdNext := 1 }
 
   // ---- the inbox writer: one stream of records, numbered 1, 2, 3, ..., never overrunning the host ----
   val arbiter = StreamArbiterFactory().roundRobin.on(io.records.toSeq ++ Seq(done, ack))
   val seq = Reg(UInt(32 bits)) init 1
-  when(write && a === r("ENABLE") && io.host.wdata(0) && !enable) { seq := 1 }
+  when(restart) { seq := 1 }
   val outstanding = seq - 1 - inboxConsumed
   val capacity = (U(1, 33 bits) << inboxLog2).resize(33 bits)
   val space = outstanding.resize(33 bits) < capacity

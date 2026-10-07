@@ -6,8 +6,8 @@ description = "Host backend for the YPCB-00338-1P1 card: serves its virtio devic
 license = "MIT"
 publish = false
 
-# No dependencies yet. The backend's few will be libc, vfio-bindings, seccompiler and landlock,
-# vendored (see SOC-ROADMAP.md).
+# No dependencies yet: src/vfio.rs declares the few syscalls it needs. seccompiler and landlock
+# come with confinement (S8), vendored (see SOC-ROADMAP.md).
 [dependencies]
 
 # Its own workspace: hw/ is also published as a repository of its own.

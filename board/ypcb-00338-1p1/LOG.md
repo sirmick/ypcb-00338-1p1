@@ -3,6 +3,40 @@
 What we did and learned, newest first. Current facts live in [README.md](README.md); this page keeps
 the path, including conclusions that turned out wrong, so nobody re-derives them.
 
+## 2026-10-06 (evening): the card's DMA through VFIO
+
+- designs/soc-s4: PcieLink on the hard block (Gen1 x1, 62.5 MHz user clock) with 64 KiB of block RAM
+  as guest memory. cardd gained a VFIO module (raw ioctls, no new dependencies) and examples/s4.rs.
+  The card enumerates as 10ee:0484 with a 64 KiB BAR0; it is alone in IOMMU group 41.
+- First build: timing failed at 44 MHz. The TLP header builder added a 64-bit address where the line
+  address only needs its DW index ORed in, and CardLink's line arithmetic ran straight into it. A
+  register stage and the OR: 88 MHz.
+- First run: the magic number read back byte-reversed (`0x43415244`). Payload DWs on the hard block's
+  stream are in PCIe byte order, like headers; PcieLink and its TLP model assumed little-endian.
+- Second run: copies completed, records arrived, but data was wrong in a few places, and a restarted
+  test was refused (the card kept the last session's sequence numbers; ENABLE 0 then 1 now resets
+  them). Two kinds of wrong data: single bits set (0→1 only) at nearly repeatable guest addresses, and
+  whole reads returning stale staging. The kernel log had IOMMU faults at `0x4000100000000`, staging's
+  address with bit 50 set.
+- Diagnosis: constant fills read back perfectly (4 MB); random data failed only at guest bytes 0x11
+  and 0x18, and varied between reads, so the error was on the way out. In the first MemWr of a burst
+  those bytes sit on `s_axis_tx_tdata` bits 18 and 25, and the fault address had header bit 50 = DW2
+  bit 18. nextpnr has no timing model for the hard block's pins, and the TX data came straight from a
+  16:1 DW mux. With registers on both stream boundaries: zero errors, no faults.
+- Result: 64 KiB round trip and 2,000 random copies pass. BAR0 read 1.6 µs median; a 4-byte copy round
+  trip 7.9 µs (to host) and 9.9 µs (from host); 64 KiB copies 163 MB/s to host, 30 MB/s from host.
+
+## 2026-10-06 (afternoon): the host link over PCIe TLPs
+
+- regymm's pcie_7x bridge is completer-only (it answers BAR accesses); the card's DMA needs a requester.
+  PcieLink (SpinalHDL) talks to the PCIE_2_1 hard block's 64-bit AXI stream directly: BAR0 MemWr/MemRd
+  to RegBus (CplD back, fields checked against regymm's bridge), MemWr for each 64-byte line covering
+  just its masked bytes, MemRd plus CplD for COPY_FROM_HOST, 3- and 4-DW headers, packet-level
+  arbitration, no DMA before Bus Master Enable.
+- A TLP-level host model replays blk_read through it below and above 4 GiB. A mutant sending a full
+  first-DW byte enable first survived (neighbouring bytes were all zero); the test now fills the
+  neighbours, and catches it.
+
 ## 2026-10-06 (small hours): cardd serves a virtio-blk read against the RTL
 
 - S3, parts 2 and 3: cardd's phase-1 backend (GuestMem through copy commands, the split-queue walker,

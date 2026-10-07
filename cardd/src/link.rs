@@ -25,7 +25,7 @@ impl From<Error> for LinkError {
     }
 }
 
-/// Checks the card and points it at the host's inbox and staging, then enables it.
+/// Checks the card and points it at the host's inbox and staging, then enables it: a new session.
 pub fn set_up(bar: &mut dyn Bar, inbox: u64, inbox_log2: u32, staging: u64, staging_size: u32) -> Result<(), LinkError> {
     let magic = bar.read32(bar0::reg::MAGIC);
     if magic != MAGIC {
@@ -35,6 +35,8 @@ pub fn set_up(bar: &mut dyn Bar, inbox: u64, inbox_log2: u32, staging: u64, stag
     if version != VERSION {
         return Err(LinkError::Version(version));
     }
+    // a new session: whatever an earlier host left running stops, and both sequences restart at 1
+    bar.write32(bar0::reg::ENABLE, 0);
     bar.write32(bar0::reg::INBOX_ADDR_LO, inbox as u32);
     bar.write32(bar0::reg::INBOX_ADDR_HI, (inbox >> 32) as u32);
     bar.write32(bar0::reg::INBOX_ENTRIES_LOG2, inbox_log2);

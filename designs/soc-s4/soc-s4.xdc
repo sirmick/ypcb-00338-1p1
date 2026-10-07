@@ -1,0 +1,20 @@
+# PCIe x1 endpoint on the YPCB-00338-1P1 (regymm/pcie_7x's pcie_7x_ypcb_k480t.xdc, I/O standards
+# corrected to the 1.8 V banks). Lane 0 of the edge connector, 100 MHz reference clock from the slot.
+set_property PACKAGE_PIN J8 [get_ports {sys_clk_p}]
+set_property PACKAGE_PIN J7 [get_ports {sys_clk_n}]
+set_property PACKAGE_PIN H6 [get_ports {pci_exp_rxp}]
+set_property PACKAGE_PIN H5 [get_ports {pci_exp_rxn}]
+set_property PACKAGE_PIN F2 [get_ports {pci_exp_txp}]
+set_property PACKAGE_PIN F1 [get_ports {pci_exp_txn}]
+# PERST#
+set_property PACKAGE_PIN Y26 [get_ports {sys_rst_n}]
+set_property PULLUP true [get_ports {sys_rst_n}]
+set_property IOSTANDARD LVCMOS18 [get_ports {sys_rst_n}]
+set_property PACKAGE_PIN AA28 [get_ports {clk_50}]
+set_property IOSTANDARD LVCMOS18 [get_ports {clk_50}]
+set_property PACKAGE_PIN N30 [get_ports {led[0]}]
+set_property PACKAGE_PIN M30 [get_ports {led[1]}]
+set_property PACKAGE_PIN P30 [get_ports {led[2]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {led[0]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {led[1]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {led[2]}]

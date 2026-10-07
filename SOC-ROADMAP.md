@@ -62,7 +62,7 @@ linux/                     (S5) OpenSBI, kernel config, device trees, Debian roo
 | S1 | The contract and its generators | ✅ done | [Contract.scala](soc/src/main/scala/card/contract/Contract.scala) generates Rust ([cardd/src/contract.rs](cardd/src/contract.rs)), a device-tree fragment, [a readable table](soc/gen/CONTRACT.md) and shared transcripts; the RTL's message encoder (SpinalSim, 12 kinds) and cardd (5 tests) produce identical bytes; editing the source makes the freshness test fail until all four outputs are regenerated |
 | S2 | virtio-mmio shim and the mailbox, tested both sides | ✅ done | [Link.scala](soc/src/main/scala/card/Link.scala): 8 virtio-mmio v2 shims and the BAR0 mailbox (registers, command ring, inbox writer with flow control). SpinalSim replays `blk_init` against it (every record's bytes and inbox address checked), plus BAR0 isolation, refused commands and inbox flow control; deliberate bugs fail the tests. cardd replays the same transcript from the host side (slot programming, inbox, command ring), with attack cases. 18 RTL tests, 10 Rust tests |
 | S3 | Phase-1 copy engine; hostile cases; co-simulation | ✅ done | The command processor executes COPY_TO_HOST, COPY_FROM_HOST and USED_PUSH as state machines with window checks; the `blk_read` transcript (a whole virtio-blk read served by copies) passes in SpinalSim with random back-pressure; hostile copies and pushes are refused. cardd gained its phase-1 backend (split-queue walker, virtio-blk, copies through staging) and serves the same read against a Rust model of the card. **Co-simulation:** cardd's real backend drives the RTL through a pipe and serves the read (322 requests, 628 cycles). 24 RTL tests, 16 Rust tests |
-| S4 | On the card: link latency and card-initiated DMA | ⬜ | |
+| S4 | On the card: link latency and card-initiated DMA | ✅ done | [designs/soc-s4](designs/soc-s4/): [PcieLink](soc/src/main/scala/card/PcieLink.scala) on the PCIe hard block (Gen1 x1), 64 KiB of block RAM as guest memory. cardd opens the card through VFIO ([vfio.rs](cardd/src/vfio.rs), its only `unsafe` code), pins its inbox below 4 GiB and staging above, and [examples/s4.rs](cardd/examples/s4.rs) passes on dino: a 64 KiB round trip and 2,000 random copies (1–3,000 bytes, any alignment) agree with a model, both DMA windows reach the RAM, no IOMMU faults. BAR0 read 1.6 µs; a 4-byte copy's round trip 7.9 µs to host, 9.9 µs from host; 64 KiB copies 163 MB/s to host, 30 MB/s from host (one 64-byte read outstanding). MSI and DDR3 move to S5/S6 |
 | S5 | One core boots Linux | ⬜ | |
 | S6 | virtio-blk and virtio-net through `cardd`; Debian | ⬜ | |
 | S7 | Four cores: SMP Debian | ⬜ | |
@@ -123,6 +123,29 @@ messages), not a coverage-guided fuzzer yet. Run the co-simulation with `cd soc 
 card.CosimSpec"` (it builds `cardd/examples/cosim.rs`).
 
 ## S4: on the card
+
+Steps: **S4a** (done) the TLP link in simulation; **S4b and S4c** (done, merged: dino's IOMMU is on, so
+the card's DMA needs VFIO from the first test) PcieLink in the PCIe bitstream with block RAM as guest
+memory, cardd's VFIO module, DMA both ways and the latency measurements.
+
+**What the card taught us (S4b):**
+- The hard block's stream carries payload DWs in the same byte order as headers: a payload DW's
+  lowest-addressed byte is in bits 31:24. The first build assumed little-endian payloads; the host read
+  the magic number byte-reversed. The TLP model in PcieLinkSpec now follows the hardware.
+- nextpnr has no timing model for PCIE_2_1's pins, so paths into the hard block are never checked. The
+  first build fed `s_axis_tx_tdata` from the TLP mux without a register: bits 18 and 25 arrived late in
+  full-speed bursts (single bits set, only with changing data, only in the first TLP of a burst, one
+  IOMMU fault on a corrupted address). Registers on both stream boundaries fixed it.
+- A host that restarts must be able to resync: ENABLE 0 then 1 now starts a new session (both sequence
+  numbers from 1), and `link::set_up` does that.
+
+**Not in S4, moved on:** MSI (cardd polls its inbox; interrupts to the host come with S6's guest
+traffic); DDR3 behind the link (S5, where the guest's memory needs it); a fabric cycle counter for
+latency (the host-side numbers above include the host's own overheads).
+
+Run it: build `designs/soc-s4`, load it, warm-reboot dino, bind the card to vfio-pci, then
+`sudo ./s4 0000:04:00.0` ([designs/soc-s4/README.md](designs/soc-s4/README.md)).
+
 
 **Proof:** a bitstream with `pcie_7x`, DDR3 and the mailbox: `cardd` opens it through VFIO, rings
 doorbells and receives MSI; **the card writes records into pinned host memory** (bus mastering,

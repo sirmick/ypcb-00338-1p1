@@ -4,7 +4,8 @@
 //! commands into the card's BAR0 command ring: each side's inbox lives in its own memory, and only
 //! posted writes cross the link. [`contract`] is generated from the RTL's contract
 //! (`soc/src/main/scala/card/contract/Contract.scala`); [`message`] encodes and checks messages.
-#![forbid(unsafe_code)]
+//! [`vfio`] is the one module allowed `unsafe` code: the syscalls that reach the real card.
+#![deny(unsafe_code)]
 
 pub mod backend;
 pub mod bar;
@@ -15,3 +16,6 @@ pub mod mem;
 pub mod message;
 pub mod queue;
 pub mod slot;
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+pub mod vfio;

@@ -99,7 +99,7 @@ object Contract {
       Reg("STAGING_ADDR_HI", 0x024, "W", ""),
       Reg("STAGING_SIZE", 0x028, "W", "host staging size in bytes"),
       Reg("CMD_PRODUCED", 0x030, "W", "doorbell: sequence number of the last command written"),
-      Reg("ENABLE", 0x034, "W", "1 once the registers above are set; 0 stops the card's writes"),
+      Reg("ENABLE", 0x034, "W", "1 once the registers above are set; 0 stops the card's writes; 0 then 1 starts a new session (both sequences from 1)"),
       Reg("STATUS", 0x038, "R", "bit 0 enabled, bit 1 inbox full, bit 2 a command was refused")
     )
     def reg(n: String): Int = regs.find(_.name == n).getOrElse(sys.error(s"no BAR0 register $n")).offset

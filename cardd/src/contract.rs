@@ -125,7 +125,7 @@ pub mod bar0 {
         pub const STAGING_SIZE: usize = 0x28;
         /// W doorbell: sequence number of the last command written
         pub const CMD_PRODUCED: usize = 0x30;
-        /// W 1 once the registers above are set; 0 stops the card's writes
+        /// W 1 once the registers above are set; 0 stops the card's writes; 0 then 1 starts a new session (both sequences from 1)
         pub const ENABLE: usize = 0x34;
         /// R bit 0 enabled, bit 1 inbox full, bit 2 a command was refused
         pub const STATUS: usize = 0x38;

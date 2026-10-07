@@ -67,6 +67,24 @@ class CardLinkSpec extends AnyFunSuite {
     }
   }
 
+  test("disabling and enabling again starts a new session: a restarted host is not refused") {
+    compiled.doSim { dut =>
+      val b = new Bench(dut)
+      b.setUp(3)
+      for (bits <- Seq(1, 0)) { b.command("INTERRUPT", 0, Map("bits" -> bits)); b.ackCommand() }
+      b.guestWrite(0, "QueueNotify", 0) // a record the old host never consumes
+      dut.clockDomain.waitSampling(100)
+      b.records.clear()
+      b.hostWrite(Bar0.reg("ENABLE"), 0)
+      b.nextRecord = 1; b.nextCommand = 1 // the new host knows nothing of the last session
+      b.setUp(3)
+      b.command("INTERRUPT", 0, Map("bits" -> 1))
+      b.ackCommand()
+      b.irqSettles(0, true)
+      assert(!b.refused, "the new session's first command was refused")
+    }
+  }
+
   test("the card never overruns the host inbox") {
     compiled.doSim { dut =>
       val b = new Bench(dut)

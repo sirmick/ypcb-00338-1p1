@@ -143,7 +143,7 @@ bytes for the 16550's receive FIFO.
 | `0x24` | `STAGING_ADDR_HI` | W |  |
 | `0x28` | `STAGING_SIZE` | W | host staging size in bytes |
 | `0x30` | `CMD_PRODUCED` | W | doorbell: sequence number of the last command written |
-| `0x34` | `ENABLE` | W | 1 once the registers above are set; 0 stops the card's writes |
+| `0x34` | `ENABLE` | W | 1 once the registers above are set; 0 stops the card's writes; 0 then 1 starts a new session (both sequences from 1) |
 | `0x38` | `STATUS` | R | bit 0 enabled, bit 1 inbox full, bit 2 a command was refused |
 
 The command ring is at `0x1000`: 64 entries of 64 bytes.

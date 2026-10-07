@@ -143,6 +143,7 @@ Check [UPSTREAM.md](../UPSTREAM.md) for what we have reported.
 | BUFH net fails to route | BUFH unusable | use BUFG | [UPSTREAM 7](../UPSTREAM.md) |
 | BRAM DI hold violations reported, fine on silicon; no hold fixing | builds fail at 200 MHz | `NEXTPNR_ARGS=--timing-allow-fail`, then prove on hardware | [UPSTREAM 8](../UPSTREAM.md) |
 | yosys: a module parameter named `INIT` arrives empty in `$readmemh` | synth error | name it something else (`INIT_FILE`) | [UPSTREAM 10](../UPSTREAM.md) |
+| No timing arcs for PCIE_2_1 pins | paths into or out of the PCIe hard block are never checked; a mux feeding `s_axis_tx_tdata` corrupted bits in full-speed bursts while nextpnr reported 88 MHz | drive the hard block's inputs from flip-flops and capture its outputs in flip-flops (designs/soc-s4) | seen by us; not yet reported |
 | 342 HCLK_CMT, 78+78 DSP and others: pips with no bits in the db | MMCM/PLL clock routing and DSP routing may not be expressible | none yet | to prove: see the card README checklist |
 | 3,938 bits in a Vivado design that prjxray cannot name (CMT, sysmon, CLB, IOI) | features we cannot generate | none | to investigate when we need them |
 
